@@ -300,13 +300,21 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         require(msg.value >= totalFee, InsufficientFunds());
         uint256 remainder = msg.value - totalFee;
 
+        // While restaking is disabled, the owner can consolidate to any target (including validators
+        // outside this pod). The pod no longer mints new shares, so there is no accounting invariant
+        // to preserve by requiring the target to be ACTIVE in this pod.
+        bool enforceTargetActive = !restakingDisabled;
+
         for (uint256 i = 0; i < requests.length; i++) {
             ConsolidationRequest calldata request = requests[i];
 
-            // Ensure target has verified withdrawal credentials pointed at this pod
             bytes32 sourcePubkeyHash = _calcPubkeyHash(request.srcPubkey);
             bytes32 targetPubkeyHash = _calcPubkeyHash(request.targetPubkey);
-            require(validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE, ValidatorNotActiveInPod());
+
+            // Ensure target has verified withdrawal credentials pointed at this pod
+            if (enforceTargetActive) {
+                require(validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE, ValidatorNotActiveInPod());
+            }
 
             // Call the predeploy
             bytes memory callData = bytes.concat(request.srcPubkey, request.targetPubkey);
