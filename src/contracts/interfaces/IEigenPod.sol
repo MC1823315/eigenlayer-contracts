@@ -309,8 +309,11 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// @dev The target validator MUST have ACTIVE (proven) withdrawal credentials pointed at
     /// the pod. This prevents cross-pod consolidations.
     /// @dev EXCEPTION: when `restakingDisabled == true`, this restriction is lifted and the
-    /// owner may consolidate to any target. The pod no longer mints shares, so there is no
+    /// caller may consolidate to any target. The pod no longer mints shares, so there is no
     /// accounting invariant for the ACTIVE-in-pod check to protect.
+    /// @dev TRUST NOTE: only the pod owner can flip `restakingDisabled` (via `setRestakingDisabled`),
+    /// but once disabled the proof submitter inherits the expanded ability to consolidate to any
+    /// target. Pod owners should account for this when authorizing a proof submitter.
     /// @dev The consolidation request predeploy requires a fee is sent with each request;
     /// this is pulled from msg.value. After submitting all requests, any remaining fee is
     /// refunded to the caller by calling its fallback function.
