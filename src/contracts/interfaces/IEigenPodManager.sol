@@ -4,6 +4,7 @@ pragma solidity >=0.5.0;
 import "@openzeppelin/contracts/proxy/beacon/IBeacon.sol";
 import "./IETHPOSDeposit.sol";
 import "./IStrategyManager.sol";
+import "./IDelegationManager.sol";
 import "./IEigenPod.sol";
 import "./IShareManager.sol";
 import "./IPausable.sol";
@@ -183,4 +184,7 @@ interface IEigenPodManager is
     /// @notice Returns the timestamp of the Pectra hard fork
     /// @dev Specifically, this returns the timestamp of the first non-missed slot at or after the Pectra hard fork
     function pectraForkTimestamp() external view returns (uint64);
+
+    /// @notice Returns the DelegationManager contract used by EigenPodManager
+    function delegationManager() external view returns (IDelegationManager);
 }

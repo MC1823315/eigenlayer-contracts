@@ -9,6 +9,7 @@ import "../libraries/BeaconChainProofs.sol";
 
 import "../interfaces/IETHPOSDeposit.sol";
 import "../interfaces/IEigenPodManager.sol";
+import "../interfaces/IDelegationManager.sol";
 import "../interfaces/IPausable.sol";
 
 import "./EigenPodPausingConstants.sol";
@@ -193,6 +194,7 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         bytes[] calldata validatorFieldsProofs,
         bytes32[][] calldata validatorFields
     ) external onlyOwnerOrProofSubmitter onlyWhenNotPaused(PAUSED_EIGENPODS_VERIFY_CREDENTIALS) {
+        require(!restakingDisabled, RestakingDisabled());
         require(
             (validatorIndices.length == validatorFieldsProofs.length)
                 && (validatorFieldsProofs.length == validatorFields.length),
@@ -372,6 +374,51 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     ) external onlyEigenPodOwner {
         emit ProofSubmitterUpdated(proofSubmitter, newProofSubmitter);
         proofSubmitter = newProofSubmitter;
+    }
+
+    /// @inheritdoc IEigenPod
+    function setRestakingDisabled(
+        bool disabled
+    ) external onlyEigenPodOwner {
+        if (disabled) {
+            // No checkpoint may be in flight, since finalizing it would credit shares.
+            require(currentCheckpointTimestamp == 0, CheckpointAlreadyActive());
+
+            // The pod owner must have queued out all positive deposit shares. Note that
+            // `stakerDepositShares` clamps negative values (legacy share deficit) to zero.
+            require(
+                eigenPodManager.stakerDepositShares(podOwner, eigenPodManager.beaconChainETHStrategy()) == 0,
+                ActiveBalanceNotCleared()
+            );
+
+            // Every queued withdrawal for the pod owner must be past `slashableUntil`. After this
+            // block, the withdrawal's slashing factor is locked at the historical block, so future
+            // beacon-chain slashings cannot affect the amount the owner ultimately receives.
+            // Note: `getQueuedWithdrawalRoots` returns post-slashing-release withdrawals only; any
+            // legacy pre-slashing-release withdrawals are not tracked here.
+            IDelegationManager dm = eigenPodManager.delegationManager();
+            bytes32[] memory roots = dm.getQueuedWithdrawalRoots(podOwner);
+            uint32 delay = dm.minWithdrawalDelayBlocks();
+            for (uint256 i = 0; i < roots.length; i++) {
+                (IDelegationManagerTypes.Withdrawal memory w,) = dm.getQueuedWithdrawal(roots[i]);
+                require(uint32(block.number) > w.startBlock + delay, WithdrawalNotCompletable());
+            }
+        }
+        restakingDisabled = disabled;
+        emit RestakingDisabledSet(disabled);
+    }
+
+    /// @inheritdoc IEigenPod
+    function withdrawNonRestakedBalance(
+        address recipient
+    ) external onlyEigenPodOwner {
+        require(restakingDisabled, RestakingNotDisabled());
+        // Pod ETH not yet credited as shares. Anything in `restakedExecutionLayerGwei` is reserved
+        // for the DelegationManager withdrawal flow and stays put.
+        uint256 amountWei = address(this).balance - (uint256(restakedExecutionLayerGwei) * GWEI_TO_WEI);
+        if (amountWei == 0) return;
+        emit NonRestakedBalanceWithdrawn(recipient, amountWei);
+        Address.sendValue(payable(recipient), amountWei);
     }
 
     /// @inheritdoc IEigenPod
@@ -560,6 +607,8 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     function _startCheckpoint(
         bool revertIfNoBalance
     ) internal {
+        // Guards both `startCheckpoint` and `verifyStaleBalance` (which calls `_startCheckpoint`).
+        require(!restakingDisabled, RestakingDisabled());
         require(currentCheckpointTimestamp == 0, CheckpointAlreadyActive());
 
         // Prevent a checkpoint being completable twice in the same block. This prevents an edge case

@@ -86,8 +86,13 @@ abstract contract EigenPodStorage is IEigenPod {
     /// @dev If this address is NOT set, only the podOwner can call `startCheckpoint` and `verifyWithdrawalCredentials`
     address public proofSubmitter;
 
+    /// @notice If true, the pod owner has disabled restaking on this pod. While disabled, no new
+    /// shares may be minted (no new credentials, checkpoints, or stale balance proofs), and any
+    /// ETH that arrives at the pod is directly withdrawable by the owner via `withdrawNonRestakedBalance`.
+    bool public restakingDisabled;
+
     /// @dev This empty reserved space is put in place to allow future versions to add new
     /// variables without shifting down storage in the inheritance chain.
     /// See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
-    uint256[35] private __gap;
+    uint256[34] private __gap;
 }

@@ -79,6 +79,17 @@ interface IEigenPodErrors {
     error BeaconTimestampBeforeLatestCheckpoint();
     /// @dev Thrown when the pectraForkTimestamp returned from the EigenPodManager is zero
     error ForkTimestampZero();
+
+    /// Restaking Disabled
+
+    /// @dev Thrown when an action is attempted that is not allowed while restaking is disabled.
+    error RestakingDisabled();
+    /// @dev Thrown when an action requiring `restakingDisabled == true` is attempted on an enabled pod.
+    error RestakingNotDisabled();
+    /// @dev Thrown when disabling restaking is attempted while the pod owner still has positive deposit shares.
+    error ActiveBalanceNotCleared();
+    /// @dev Thrown when disabling restaking is attempted while the pod owner has a queued withdrawal whose delay has not elapsed.
+    error WithdrawalNotCompletable();
 }
 
 interface IEigenPodTypes {
@@ -175,6 +186,12 @@ interface IEigenPodEvents is IEigenPodTypes {
 
     /// @notice Emitted when a partial withdrawal request is initiated
     event WithdrawalRequested(bytes32 indexed validatorPubkeyHash, uint64 withdrawalAmountGwei);
+
+    /// @notice Emitted when the pod owner enables or disables restaking on this pod.
+    event RestakingDisabledSet(bool disabled);
+
+    /// @notice Emitted when the pod owner sweeps non-restaked ETH directly out of a disabled pod.
+    event NonRestakedBalanceWithdrawn(address indexed recipient, uint256 amountWei);
 }
 
 /// @title The implementation contract used for restaking beacon chain ETH on EigenLayer
@@ -397,9 +414,34 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
         address newProofSubmitter
     ) external;
 
+    /// @notice Enables or disables restaking on this pod. While disabled:
+    /// - `startCheckpoint`, `verifyWithdrawalCredentials`, and `verifyStaleBalance` revert, so no
+    ///   new shares can be minted into the pod.
+    /// - `withdrawNonRestakedBalance` allows the owner to directly sweep any ETH that arrives at the
+    ///   pod (e.g. from validator exits) without going through the DelegationManager withdrawal queue.
+    /// @dev When transitioning from enabled to disabled, the call requires:
+    /// - no active checkpoint
+    /// - no positive deposit shares for the pod owner in the EigenPodManager
+    /// - every queued withdrawal for the pod owner is past its `slashableUntil` block
+    /// (post-slashing-release withdrawals only; legacy withdrawals are not tracked here).
+    function setRestakingDisabled(
+        bool disabled
+    ) external;
+
+    /// @notice Sweeps all non-restaked ETH out of the pod to `recipient`. Only callable by the
+    /// pod owner while `restakingDisabled == true`. The amount sent is
+    /// `address(this).balance - restakedExecutionLayerGwei * GWEI_TO_WEI`, leaving any ETH already
+    /// credited as shares (and reserved for the DelegationManager withdrawal flow) untouched.
+    function withdrawNonRestakedBalance(
+        address recipient
+    ) external;
+
     ///
     ///                                VIEW METHODS
     ///
+
+    /// @notice Whether the pod owner has disabled restaking on this pod. See `setRestakingDisabled`.
+    function restakingDisabled() external view returns (bool);
 
     /// @notice An address with permissions to call `startCheckpoint` and `verifyWithdrawalCredentials`, set
     /// by the podOwner. This role exists to allow a podOwner to designate a hot wallet that can call
