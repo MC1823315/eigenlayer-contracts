@@ -86,6 +86,8 @@ interface IEigenPodErrors {
     error RestakingDisabled();
     /// @dev Thrown when an action requiring `restakingDisabled == true` is attempted on an enabled pod.
     error RestakingNotDisabled();
+    /// @dev Thrown when `permanentlyDisableRestaking` is called on a pod that has already been disabled.
+    error AlreadyDisabled();
     /// @dev Thrown when disabling restaking is attempted while the pod owner still has positive deposit shares.
     error ActiveBalanceNotCleared();
     /// @dev Thrown when disabling restaking is attempted while the pod owner has a queued withdrawal whose delay has not elapsed.
@@ -187,8 +189,8 @@ interface IEigenPodEvents is IEigenPodTypes {
     /// @notice Emitted when a partial withdrawal request is initiated
     event WithdrawalRequested(bytes32 indexed validatorPubkeyHash, uint64 withdrawalAmountGwei);
 
-    /// @notice Emitted when the pod owner enables or disables restaking on this pod.
-    event RestakingDisabledSet(bool disabled);
+    /// @notice Emitted when the pod owner permanently disables restaking on this pod.
+    event RestakingPermanentlyDisabled();
 
     /// @notice Emitted when the pod owner sweeps non-restaked ETH directly out of a disabled pod.
     event NonRestakedBalanceWithdrawn(address indexed recipient, uint256 amountWei);
@@ -311,7 +313,7 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// @dev EXCEPTION: when `restakingDisabled == true`, this restriction is lifted and the
     /// caller may consolidate to any target. The pod no longer mints shares, so there is no
     /// accounting invariant for the ACTIVE-in-pod check to protect.
-    /// @dev TRUST NOTE: only the pod owner can flip `restakingDisabled` (via `setRestakingDisabled`),
+    /// @dev TRUST NOTE: only the pod owner can disable restaking (via `permanentlyDisableRestaking`),
     /// but once disabled the proof submitter inherits the expanded ability to consolidate to any
     /// target. Pod owners should account for this when authorizing a proof submitter.
     /// @dev The consolidation request predeploy requires a fee is sent with each request;
@@ -420,19 +422,20 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
         address newProofSubmitter
     ) external;
 
-    /// @notice Enables or disables restaking on this pod. While disabled:
+    /// @notice Permanently disables restaking on this pod. This action is IRREVERSIBLE.
+    /// Once disabled:
     /// - `startCheckpoint`, `verifyWithdrawalCredentials`, and `verifyStaleBalance` revert, so no
     ///   new shares can be minted into the pod.
     /// - `withdrawNonRestakedBalance` allows the owner to directly sweep any ETH that arrives at the
     ///   pod (e.g. from validator exits) without going through the DelegationManager withdrawal queue.
-    /// @dev When transitioning from enabled to disabled, the call requires:
+    /// - `requestConsolidation` allows consolidations to validators outside this pod.
+    /// @dev The call requires:
+    /// - the pod is not already permanently disabled
     /// - no active checkpoint
     /// - no positive deposit shares for the pod owner in the EigenPodManager
     /// - every queued withdrawal for the pod owner is past its `slashableUntil` block
     /// (post-slashing-release withdrawals only; legacy withdrawals are not tracked here).
-    function setRestakingDisabled(
-        bool disabled
-    ) external;
+    function permanentlyDisableRestaking() external;
 
     /// @notice Sweeps all non-restaked ETH out of the pod to `recipient`. Only callable by the
     /// pod owner while `restakingDisabled == true`. The amount sent is
@@ -446,7 +449,8 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     ///                                VIEW METHODS
     ///
 
-    /// @notice Whether the pod owner has disabled restaking on this pod. See `setRestakingDisabled`.
+    /// @notice Whether the pod owner has permanently disabled restaking on this pod.
+    /// See `permanentlyDisableRestaking`.
     function restakingDisabled() external view returns (bool);
 
     /// @notice An address with permissions to call `startCheckpoint` and `verifyWithdrawalCredentials`, set

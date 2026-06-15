@@ -87,6 +87,7 @@ abstract contract EigenLayerUnitTestSetup is Test {
             StrategyManagerMock(payable(address(new StrategyManagerMock(IDelegationManager(address(delegationManagerMock))))));
         delegationManagerMock = DelegationManagerMock(payable(address(new DelegationManagerMock())));
         eigenPodManagerMock = EigenPodManagerMock(payable(address(new EigenPodManagerMock(pauserRegistry))));
+        eigenPodManagerMock.setDelegationManager(IDelegationManager(address(delegationManagerMock)));
         backingEigenMock = BackingEigenMock(payable(address(new BackingEigenMock())));
         eigenMock = EigenMock(payable(address(new EigenMock(backingEigenMock))));
         rewardsCoordinatorMock = RewardsCoordinatorMock(payable(address(new RewardsCoordinatorMock())));

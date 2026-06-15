@@ -1946,6 +1946,313 @@ contract EigenPodUnitTests_PectraFeatures is EigenPodUnitTests {
     }
 }
 
+contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
+    using LibValidator for *;
+
+    IStrategy constant BEACON_ETH_STRATEGY = IStrategy(0xbeaC0eeEeeeeEEeEeEEEEeeEEeEeeeEeeEEBEaC0);
+
+    /// @dev Wires the EigenPodManager mock so `permanentlyDisableRestaking` can read
+    /// `beaconChainETHStrategy()` and `delegationManager()`. The unit setup already wires
+    /// the DM mock, but the BC strategy is unset by default.
+    function _wireDisablePreconditions() internal {
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+    }
+
+    function _newQueuedWithdrawal(address staker, uint32 startBlock)
+        internal
+        pure
+        returns (IDelegationManagerTypes.Withdrawal memory)
+    {
+        IStrategy[] memory strategies = new IStrategy[](1);
+        strategies[0] = BEACON_ETH_STRATEGY;
+        uint[] memory scaled = new uint[](1);
+        scaled[0] = 1 ether;
+        return IDelegationManagerTypes.Withdrawal({
+            staker: staker,
+            delegatedTo: address(0),
+            withdrawer: staker,
+            nonce: 0,
+            startBlock: startBlock,
+            strategies: strategies,
+            scaledShares: scaled
+        });
+    }
+
+    ///
+    ///                permanentlyDisableRestaking
+    ///
+
+    function test_permanentlyDisableRestaking_revert_notPodOwner(address invalidCaller) public {
+        cheats.assume(invalidCaller != address(this));
+        _wireDisablePreconditions();
+
+        cheats.prank(invalidCaller);
+        cheats.expectRevert(IEigenPodErrors.OnlyEigenPodOwner.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_success() public {
+        _wireDisablePreconditions();
+
+        cheats.expectEmit(true, true, true, true, address(eigenPod));
+        emit RestakingPermanentlyDisabled();
+        eigenPod.permanentlyDisableRestaking();
+
+        assertTrue(eigenPod.restakingDisabled(), "flag should be set after disable");
+    }
+
+    function test_permanentlyDisableRestaking_revert_alreadyDisabled() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        cheats.expectRevert(IEigenPodErrors.AlreadyDisabled.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_revert_checkpointActive() public {
+        _wireDisablePreconditions();
+
+        // Bring a validator into ACTIVE status, then start a checkpoint.
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
+        staker.startCheckpoint();
+
+        cheats.prank(pod.podOwner());
+        cheats.expectRevert(IEigenPodErrors.CheckpointAlreadyActive.selector);
+        pod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_revert_activeBalanceNotCleared() public {
+        _wireDisablePreconditions();
+        eigenPodManagerMock.setPodOwnerShares(address(this), 1 ether);
+
+        cheats.expectRevert(IEigenPodErrors.ActiveBalanceNotCleared.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_negativeShares_succeeds() public {
+        _wireDisablePreconditions();
+        // Negative shares clamp to zero in stakerDepositShares — disable is allowed.
+        eigenPodManagerMock.setPodOwnerShares(address(this), -1 ether);
+
+        eigenPod.permanentlyDisableRestaking();
+        assertTrue(eigenPod.restakingDisabled(), "should disable when shares are negative");
+    }
+
+    function test_permanentlyDisableRestaking_revert_withdrawalNotCompletable() public {
+        _wireDisablePreconditions();
+
+        // Roll forward so we have headroom to set startBlocks in the past
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Register a withdrawal that is NOT yet past delay
+        uint32 startBlock = uint32(block.number) - 50;
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock);
+        uint[] memory shares = new uint[](1);
+        shares[0] = 1 ether;
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
+
+        cheats.expectRevert(IEigenPodErrors.WithdrawalNotCompletable.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_pastDelay_succeeds() public {
+        _wireDisablePreconditions();
+
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Withdrawal is past `startBlock + delay` — disable is allowed.
+        uint32 startBlock = uint32(block.number) - 200;
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock);
+        uint[] memory shares = new uint[](1);
+        shares[0] = 1 ether;
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
+
+        eigenPod.permanentlyDisableRestaking();
+        assertTrue(eigenPod.restakingDisabled(), "should disable past delay");
+    }
+
+    ///
+    ///                Post-disable guards on share-minting paths
+    ///
+
+    function _disablePod(EigenPod pod) internal {
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+        cheats.prank(pod.podOwner());
+        pod.permanentlyDisableRestaking();
+    }
+
+    function test_disabled_revert_startCheckpoint() public {
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        staker.startValidators();
+        _disablePod(pod);
+
+        cheats.prank(pod.podOwner());
+        cheats.expectRevert(IEigenPodErrors.RestakingDisabled.selector);
+        pod.startCheckpoint(false);
+    }
+
+    function test_disabled_revert_verifyWithdrawalCredentials() public {
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        (uint40[] memory validators,,) = staker.startValidators();
+        _disablePod(pod);
+
+        CredentialProofs memory proofs = beaconChain.getCredentialProofs(validators);
+        cheats.prank(pod.podOwner());
+        cheats.expectRevert(IEigenPodErrors.RestakingDisabled.selector);
+        pod.verifyWithdrawalCredentials({
+            beaconTimestamp: proofs.beaconTimestamp,
+            stateRootProof: proofs.stateRootProof,
+            validatorIndices: validators,
+            validatorFieldsProofs: proofs.validatorFieldsProofs,
+            validatorFields: proofs.validatorFields
+        });
+    }
+
+    function test_disabled_revert_verifyStaleBalance() public {
+        // verifyStaleBalance reaches `_startCheckpoint`, where the disable guard lives.
+        // Even with a fully-valid stale proof, the call must revert once disabled.
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
+
+        // Slash on the beacon chain so the proof passes the staleness checks
+        beaconChain.slashValidators(validators, BeaconChainMock.SlashType.Minor);
+        beaconChain.advanceEpoch();
+        StaleBalanceProofs memory proofs = beaconChain.getStaleBalanceProofs(validators[0]);
+
+        _disablePod(pod);
+
+        cheats.expectRevert(IEigenPodErrors.RestakingDisabled.selector);
+        pod.verifyStaleBalance({
+            beaconTimestamp: proofs.beaconTimestamp,
+            stateRootProof: proofs.stateRootProof,
+            proof: proofs.validatorProof
+        });
+    }
+
+    ///
+    ///                Cross-pod consolidation exception
+    ///
+
+    function test_disabled_consolidation_targetOutsidePodAllowed() public {
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        address podOwner = pod.podOwner();
+        _disablePod(pod);
+
+        // Target is a validator NOT proven into this pod — pre-disable this would revert
+        // ValidatorNotActiveInPod. After disable, it must be allowed.
+        bytes memory srcPubkey = uint40(1).toPubkey();
+        bytes memory targetPubkey = uint40(2).toPubkey();
+
+        ConsolidationRequest[] memory cReqs = new ConsolidationRequest[](1);
+        cReqs[0] = ConsolidationRequest({srcPubkey: srcPubkey, targetPubkey: targetPubkey});
+
+        uint fee = pod.getConsolidationRequestFee();
+        cheats.deal(podOwner, podOwner.balance + fee);
+
+        cheats.expectEmit(true, true, true, true, address(pod));
+        emit ConsolidationRequested(srcPubkey.pubkeyHash(), targetPubkey.pubkeyHash());
+        cheats.prank(podOwner);
+        pod.requestConsolidation{value: fee}(cReqs);
+    }
+
+    ///
+    ///                withdrawNonRestakedBalance
+    ///
+
+    function test_withdrawNonRestakedBalance_revert_notPodOwner(address invalidCaller) public {
+        cheats.assume(invalidCaller != address(this));
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        cheats.prank(invalidCaller);
+        cheats.expectRevert(IEigenPodErrors.OnlyEigenPodOwner.selector);
+        eigenPod.withdrawNonRestakedBalance(invalidCaller);
+    }
+
+    function test_withdrawNonRestakedBalance_revert_notDisabled() public {
+        _seedPodWithETH(1 ether);
+        cheats.expectRevert(IEigenPodErrors.RestakingNotDisabled.selector);
+        eigenPod.withdrawNonRestakedBalance(address(this));
+    }
+
+    function test_withdrawNonRestakedBalance_zeroBalance_noop() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        address recipient = cheats.addr(0xBEEF);
+        eigenPod.withdrawNonRestakedBalance(recipient);
+
+        assertEq(address(eigenPod).balance, 0, "pod should remain at 0");
+        assertEq(recipient.balance, 0, "recipient should not have received anything");
+    }
+
+    function test_withdrawNonRestakedBalance_sweepsFreeETH() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+        _seedPodWithETH(7 ether);
+
+        address recipient = cheats.addr(0xBEEF);
+        cheats.expectEmit(true, true, true, true, address(eigenPod));
+        emit NonRestakedBalanceWithdrawn(recipient, 7 ether);
+        eigenPod.withdrawNonRestakedBalance(recipient);
+
+        assertEq(address(eigenPod).balance, 0, "pod should be fully drained");
+        assertEq(recipient.balance, 7 ether, "recipient got swept ETH");
+    }
+
+    function test_withdrawNonRestakedBalance_leavesRELReserve() public {
+        // Verify a validator and complete one checkpoint so the pod has a positive
+        // restakedExecutionLayerGwei balance, then disable, then send an extra 5 ETH
+        // and confirm only the surplus is swept.
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        address podOwner = pod.podOwner();
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
+
+        // Exit the validator so its balance lands in the pod and gets credited
+        // as restakedExecutionLayerGwei via a checkpoint.
+        staker.exitValidators(validators);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        uint64 relGwei = pod.withdrawableRestakedExecutionLayerGwei();
+        assertGt(relGwei, 0, "REL should be positive after exit checkpoint");
+
+        // Clear deposit shares to satisfy the disable precondition.
+        eigenPodManagerMock.setPodOwnerShares(podOwner, 0);
+        _disablePod(pod);
+
+        // Send extra ETH after disable.
+        cheats.deal(address(this), 5 ether);
+        (bool ok,) = address(pod).call{value: 5 ether}("");
+        require(ok, "send failed");
+
+        uint preBalance = address(pod).balance;
+        address recipient = cheats.addr(0xCAFE);
+        cheats.prank(podOwner);
+        pod.withdrawNonRestakedBalance(recipient);
+
+        uint relWei = uint(relGwei) * 1 gwei;
+        assertEq(address(pod).balance, relWei, "REL portion must remain in pod");
+        assertEq(recipient.balance, preBalance - relWei, "recipient gets surplus only");
+        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), relGwei, "REL accounting unchanged");
+    }
+}
+
 contract EigenPodHarnessSetup is EigenPodUnitTests {
     // Harness that exposes internal functions for test
     EigenPodHarness public eigenPodHarnessImplementation;

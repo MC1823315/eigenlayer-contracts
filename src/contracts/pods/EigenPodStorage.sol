@@ -86,9 +86,10 @@ abstract contract EigenPodStorage is IEigenPod {
     /// @dev If this address is NOT set, only the podOwner can call `startCheckpoint` and `verifyWithdrawalCredentials`
     address public proofSubmitter;
 
-    /// @notice If true, the pod owner has disabled restaking on this pod. While disabled, no new
-    /// shares may be minted (no new credentials, checkpoints, or stale balance proofs), and any
-    /// ETH that arrives at the pod is directly withdrawable by the owner via `withdrawNonRestakedBalance`.
+    /// @notice If true, the pod owner has permanently disabled restaking on this pod. Once set,
+    /// this flag can never be cleared. While disabled, no new shares may be minted (no new
+    /// credentials, checkpoints, or stale balance proofs), and any ETH that arrives at the pod is
+    /// directly withdrawable by the owner via `withdrawNonRestakedBalance`.
     bool public restakingDisabled;
 
     /// @dev This empty reserved space is put in place to allow future versions to add new

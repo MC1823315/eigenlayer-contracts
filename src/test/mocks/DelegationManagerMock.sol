@@ -17,6 +17,10 @@ contract DelegationManagerMock is Test {
 
     uint32 internal _minWithdrawalDelayBlocks;
 
+    mapping(address => bytes32[]) internal _queuedWithdrawalRoots;
+    mapping(bytes32 => IDelegationManagerTypes.Withdrawal) internal _queuedWithdrawalByRoot;
+    mapping(bytes32 => uint[]) internal _queuedWithdrawalSharesByRoot;
+
     struct RegisterAsOperatorCall {
         address operator;
         address delegationApprover;
@@ -183,5 +187,28 @@ contract DelegationManagerMock is Test {
         external
     {
         strategyManager.withdrawSharesAsTokens(recipient, strategy, token, shares);
+    }
+
+    /// @notice Test helper: register a synthetic queued withdrawal for `staker`.
+    function pushQueuedWithdrawal(address staker, IDelegationManagerTypes.Withdrawal calldata withdrawal, uint[] calldata shares)
+        external
+        returns (bytes32 root)
+    {
+        root = keccak256(abi.encode(withdrawal));
+        _queuedWithdrawalRoots[staker].push(root);
+        _queuedWithdrawalByRoot[root] = withdrawal;
+        _queuedWithdrawalSharesByRoot[root] = shares;
+    }
+
+    function getQueuedWithdrawalRoots(address staker) external view returns (bytes32[] memory) {
+        return _queuedWithdrawalRoots[staker];
+    }
+
+    function getQueuedWithdrawal(bytes32 withdrawalRoot)
+        external
+        view
+        returns (IDelegationManagerTypes.Withdrawal memory withdrawal, uint[] memory shares)
+    {
+        return (_queuedWithdrawalByRoot[withdrawalRoot], _queuedWithdrawalSharesByRoot[withdrawalRoot]);
     }
 }

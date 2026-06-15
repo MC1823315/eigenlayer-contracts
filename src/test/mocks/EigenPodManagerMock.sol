@@ -3,6 +3,7 @@ pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
 import "../../contracts/interfaces/IStrategy.sol";
+import "../../contracts/interfaces/IDelegationManager.sol";
 import "../../contracts/permissions/Pausable.sol";
 
 contract EigenPodManagerMock is Test, Pausable {
@@ -15,6 +16,9 @@ contract EigenPodManagerMock is Test, Pausable {
 
     uint64 public pectraForkTimestamp;
 
+    IStrategy public beaconChainETHStrategy;
+    IDelegationManager public delegationManager;
+
     struct BeaconChainSlashingFactor {
         bool isSet;
         uint64 slashingFactor;
@@ -25,6 +29,14 @@ contract EigenPodManagerMock is Test, Pausable {
     constructor(IPauserRegistry _pauserRegistry) Pausable(_pauserRegistry) {
         _setPausedStatus(0);
         pectraForkTimestamp = 1 hours * 12;
+    }
+
+    function setBeaconChainETHStrategy(IStrategy strategy) external {
+        beaconChainETHStrategy = strategy;
+    }
+
+    function setDelegationManager(IDelegationManager dm) external {
+        delegationManager = dm;
     }
 
     function podOwnerShares(address podOwner) external view returns (int) {

@@ -37,6 +37,7 @@ Because beacon chain proofs are processed asynchronously from the beacon chain i
 * [Checkpointing Validators](#checkpointing-validators)
 * [Staleness Proofs](#staleness-proofs)
 * [Consolidations and Withdrawals](#consolidations-and-withdrawals)
+* [Disabling Restaking](#disabling-restaking)
 * [Other Methods](#other-methods)
 
 #### Important Definitions
@@ -132,6 +133,7 @@ _Note that it is not required to verify your validator's withdrawal credentials_
 *Requirements*:
 * Caller MUST be EITHER the Pod Owner or Proof Submitter
 * Pause status MUST NOT be set: `PAUSED_EIGENPODS_VERIFY_CREDENTIALS`
+* `restakingDisabled` MUST be false (see [Disabling Restaking](#disabling-restaking))
 * Input array lengths MUST be equal
 * `beaconTimestamp`:
     * MUST be greater than `currentCheckpointTimestamp`
@@ -207,6 +209,7 @@ This guarantee means that, if we use the checkpoint to sum up the beacon chain b
 *Requirements*:
 * Caller MUST be EITHER the Pod Owner or Proof Submitter
 * Pause status MUST NOT be set: `PAUSED_START_CHECKPOINT`
+* `restakingDisabled` MUST be false (see [Disabling Restaking](#disabling-restaking))
 * A checkpoint MUST NOT be active (`currentCheckpointTimestamp == 0`)
 * The last checkpoint completed MUST NOT have been started in the current block (`lastCheckpointTimestamp != block.timestamp`)
 * If `revertIfNoBalance == true`, the pod's native ETH balance MUST contain some nonzero value not already accounted for in the _Pod Owner's_ shares
@@ -310,6 +313,7 @@ If these requirements are met and the proofs are valid against a beacon block ro
 *Requirements*:
 * Pause status MUST NOT be set: `PAUSED_START_CHECKPOINT`
 * Pause status MUST NOT be set: `PAUSED_VERIFY_STALE_BALANCE`
+* `restakingDisabled` MUST be false (see [Disabling Restaking](#disabling-restaking))
 * A checkpoint MUST NOT be active (`currentCheckpointTimestamp == 0`)
 * The last checkpoint completed MUST NOT be the current block
 * For the validator given by `proof.validatorFields`:
@@ -362,6 +366,7 @@ In order to initiate a consolidation request ([basic how-to guide here]((https:/
 * The predeploy requires a fee for each request. The current fee for the block can be queried using `getConsolidationRequestFee`. This should be multiplied for each request in the passed-in `requests` array and provided as `msg.value`. The predeploy updates its fee each block depending on how many consolidation requests are queued vs how many are processed.
     * Note that any unused fee is transferred back to `msg.sender` at the end of this method.
 * The `target` validator MUST have verified withdrawal credentials (`getValidatorStatus` returns `ACTIVE`)
+    * **Exception:** when `restakingDisabled == true`, this restriction is lifted. The pod no longer mints shares, so there is no accounting invariant to preserve by requiring the target to be ACTIVE in this pod. This is the cross-pod consolidation use case described in [Disabling Restaking](#disabling-restaking).
 * For standard requests, the `target` validator MUST have 0x02 withdrawal credentials on the beacon chain.
 
 When a standard consolidation is completed on the beacon chain, the source validator's balance will be transferred to the target validator. For all intents and purposes, the source validator will appear to have "exited" - its exit epoch and withdrawable epoch are set, and its balance drops to zero. When processed by a checkpoint, this 0 balance will cause the _source_ validator to be marked as `WITHDRAWN`, exempting it from future checkpoint proofs.
@@ -378,7 +383,7 @@ Note that the beacon chain may "skip" a consolidation request for many reasons. 
 * `msg.value` MUST be at least `getConsolidationRequestFee() * requests.length`
 * For each `request` in `requests`:
     * `request.srcPubkey` and `request.targetPubkey` MUST have a length of 48
-    * `request.targetPubkey` MUST correspond to a validator whose withdrawal credentials are proven to point at the pod (`VALIDATOR_STATUS.ACTIVE`)
+    * `request.targetPubkey` MUST correspond to a validator whose withdrawal credentials are proven to point at the pod (`VALIDATOR_STATUS.ACTIVE`), UNLESS `restakingDisabled == true`
 * If excess `msg.value` was provided, the transfer of the excess back to `msg.sender` MUST succeed.
 
 #### `requestWithdrawal`
@@ -435,6 +440,71 @@ Note that the beacon chain may "skip" a withdrawal request for many reasons. Thi
     * The validator MUST have been proven to the pod
     * `request.pubkey` MUST correspond to a validator whose withdrawal credentials are proven to point at the pod (`VALIDATOR_STATUS.ACTIVE`)
 * If excess `msg.value` was provided, the transfer of the excess back to `msg.sender` MUST succeed.
+
+---
+
+### Disabling Restaking
+
+A Pod Owner can permanently disable restaking on their `EigenPod`. Disabling is **irreversible**: once set, the `restakingDisabled` flag cannot be cleared. The intended use cases are:
+* Permanently retiring a pod from EigenLayer
+* Performing a one-time cross-pod consolidation: moving validator balance from this pod to a validator owned by another pod (see the [`requestConsolidation` exception](#requestconsolidation) below)
+
+While restaking is disabled:
+* `verifyWithdrawalCredentials`, `startCheckpoint`, and `verifyStaleBalance` revert. No new shares can be minted into the pod.
+* `withdrawNonRestakedBalance` allows the Pod Owner to sweep any ETH that arrives at the pod (validator exits, fees, direct sends) without going through the `DelegationManager` withdrawal queue.
+* `requestConsolidation` lifts its "target validator must be ACTIVE in this pod" requirement, allowing cross-pod consolidations.
+
+In-flight withdrawals are NOT blocked: `EigenPodManager.withdrawSharesAsTokens` (and the `EigenPod.withdrawRestakedBeaconChainETH` path it uses) is not gated by the disable flag. As long as `restakedExecutionLayerGwei` is credited before the disable lands, the Pod Owner can complete previously-queued `DelegationManager` withdrawals after disabling.
+
+_Methods:_
+* [`permanentlyDisableRestaking`](#permanentlydisablerestaking)
+* [`withdrawNonRestakedBalance`](#withdrawnonrestakedbalance)
+
+#### `permanentlyDisableRestaking`
+
+```solidity
+function permanentlyDisableRestaking() external onlyEigenPodOwner;
+```
+
+Sets the `restakingDisabled` flag on the pod. Emits `RestakingPermanentlyDisabled`.
+
+The preconditions ensure that no in-flight share-mutating operation can be invalidated by the disable:
+* No active checkpoint, since finalizing one would credit shares.
+* The Pod Owner has zero positive deposit shares in the `EigenPodManager`. Note that `stakerDepositShares` clamps negative values (legacy share deficit) to zero, so a deficit does not block the disable.
+* Every queued withdrawal for the Pod Owner is past its `slashableUntil` block (`startBlock + minWithdrawalDelayBlocks`). After this block, the withdrawal's slashing factor is locked at the historical block, so future beacon-chain slashings cannot affect what the owner ultimately receives. Note that this check uses `getQueuedWithdrawalRoots`, which only returns post-slashing-release withdrawals.
+
+**Trust note for Proof Submitters:** only the Pod Owner can call this method. However, once disabled, the Proof Submitter inherits the expanded ability to consolidate to any target validator via `requestConsolidation`. Pod Owners should account for this when authorizing a Proof Submitter, and may wish to rotate the Proof Submitter before disabling.
+
+*Effects*:
+* Sets `restakingDisabled = true`
+* Emits `RestakingPermanentlyDisabled`
+
+*Requirements*:
+* Caller MUST be the Pod Owner
+* Pod MUST NOT already be permanently disabled (`AlreadyDisabled`)
+* `currentCheckpointTimestamp` MUST be 0 (`CheckpointAlreadyActive`)
+* `EigenPodManager.stakerDepositShares(podOwner, beaconChainETHStrategy)` MUST be 0 (`ActiveBalanceNotCleared`)
+* For every queued withdrawal returned by `DelegationManager.getQueuedWithdrawalRoots(podOwner)`: `block.number > startBlock + minWithdrawalDelayBlocks` (`WithdrawalNotCompletable`)
+
+#### `withdrawNonRestakedBalance`
+
+```solidity
+function withdrawNonRestakedBalance(address recipient) external onlyEigenPodOwner;
+```
+
+Sweeps any "free" ETH out of the pod to `recipient`. The amount sent is `address(this).balance - restakedExecutionLayerGwei * GWEI_TO_WEI`, leaving any ETH already credited as shares (and reserved for the `DelegationManager` withdrawal flow) untouched.
+
+This is the primary exit path for ETH that arrives at a disabled pod (validator exits, dust sweeps, direct sends), since `startCheckpoint` is locked and shares cannot be minted.
+
+*Effects*:
+* Transfers `address(this).balance - restakedExecutionLayerGwei * GWEI_TO_WEI` to `recipient`
+* No-op if the calculated amount is 0
+* Emits `NonRestakedBalanceWithdrawn` when a transfer occurs
+
+*Requirements*:
+* Caller MUST be the Pod Owner
+* `restakingDisabled` MUST be true (`RestakingNotDisabled`)
+* `recipient` MUST NOT revert when transferred ETH
 
 ---
 
