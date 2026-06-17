@@ -2280,10 +2280,10 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertEq(recipient.balance, 7 ether, "recipient got swept ETH");
     }
 
-    function test_withdrawNonRestakedBalance_leavesRELReserve() public {
+    function test_withdrawNonRestakedBalance_zeroesRELOnDisable() public {
         // Verify a validator and complete one checkpoint so the pod has a positive
-        // restakedExecutionLayerGwei balance, then disable, then send an extra 5 ETH
-        // and confirm only the surplus is swept.
+        // restakedExecutionLayerGwei balance, then disable. Disabling zeroes REL, so the
+        // entire pod balance (former REL portion plus any later arrivals) is sweepable.
         (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
         EigenPod pod = staker.pod();
         address podOwner = pod.podOwner();
@@ -2297,12 +2297,14 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         staker.startCheckpoint();
         staker.completeCheckpoint();
 
-        uint64 relGwei = pod.withdrawableRestakedExecutionLayerGwei();
-        assertGt(relGwei, 0, "REL should be positive after exit checkpoint");
+        assertGt(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be positive after exit checkpoint");
 
         // Clear deposit shares to satisfy the disable precondition.
         eigenPodManagerMock.setPodOwnerShares(podOwner, 0);
         _disablePod(pod);
+
+        // Disabling zeroes REL: the formerly-reserved ETH is now treated as non-restaked.
+        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL must be zeroed on disable");
 
         // Send extra ETH after disable.
         cheats.deal(address(this), 5 ether);
@@ -2314,10 +2316,9 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         cheats.prank(podOwner);
         pod.withdrawNonRestakedBalance(recipient);
 
-        uint relWei = uint(relGwei) * 1 gwei;
-        assertEq(address(pod).balance, relWei, "REL portion must remain in pod");
-        assertEq(recipient.balance, preBalance - relWei, "recipient gets surplus only");
-        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), relGwei, "REL accounting unchanged");
+        assertEq(address(pod).balance, 0, "entire balance is sweepable once REL is zeroed");
+        assertEq(recipient.balance, preBalance, "recipient gets the full balance");
+        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL stays zero");
     }
 }
 

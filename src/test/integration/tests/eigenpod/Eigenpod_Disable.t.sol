@@ -94,10 +94,10 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
         pod.startCheckpoint(false);
     }
 
-    /// Disabling does NOT block in-flight withdrawal completions. As long as REL is
-    /// credited before the disable (which it must be, since `startCheckpoint` is locked
-    /// once disabled), the staker can complete a queued withdrawal as tokens after the
-    /// disable lands.
+    /// Disabling renders any in-flight beacon-chain-ETH withdrawal inert: it can be
+    /// completed neither as tokens (REL is zeroed on disable, so withdrawRestakedBeaconChainETH
+    /// reverts) nor as shares (the EigenPodManager blocks re-crediting a disabled pod). The
+    /// value is instead recovered by the owner via withdrawNonRestakedBalance.
     function test_Queue_Exit_Checkpoint_Disable_Complete(uint24 _rand) public rand(_rand) {
         (User staker, IStrategy[] memory strategies, uint[] memory tokenBalances) = _newRandomStaker();
         EigenPod pod = staker.pod();
@@ -121,36 +121,41 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
 
         uint64 relGwei = pod.withdrawableRestakedExecutionLayerGwei();
         assertGt(relGwei, 0, "REL should be credited after exit checkpoint");
+        uint podBalanceBefore = address(pod).balance;
 
         // 4. Roll past the withdrawal delay and disable. The queued withdrawal is now
-        //    past slashableUntil so disable's per-withdrawal check passes.
+        //    past slashableUntil so disable's per-withdrawal check passes. Disable zeroes REL.
         _rollBlocksForCompleteWithdrawals(withdrawals);
 
         cheats.prank(address(staker));
         pod.permanentlyDisableRestaking();
         assertTrue(pod.restakingDisabled(), "pod should be disabled");
+        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be zeroed on disable");
 
-        // 5. Complete the withdrawal directly via the DelegationManager. This bypasses
-        //    the User helper (which would try to start a checkpoint and revert). The
-        //    DM path calls EigenPodManager.withdrawSharesAsTokens → EigenPod.withdrawRestakedBeaconChainETH,
-        //    which is NOT gated by the disable flag and pays out from REL.
         IERC20[] memory tokens = new IERC20[](strategies.length);
         for (uint i = 0; i < strategies.length; i++) {
             tokens[i] = strategies[i] == BEACONCHAIN_ETH_STRAT ? NATIVE_ETH : strategies[i].underlyingToken();
         }
 
-        uint stakerBalanceBefore = address(staker).balance;
+        // 5a. Completing as tokens reverts: REL is zeroed, so withdrawRestakedBeaconChainETH
+        //     has nothing to pay out.
         cheats.prank(address(staker));
+        cheats.expectRevert(IEigenPodErrors.InsufficientWithdrawableBalance.selector);
         delegationManager.completeQueuedWithdrawal(withdrawals[0], tokens, true);
 
-        // The staker should have received native ETH equal to the previously-credited REL.
-        uint expected = uint(relGwei) * 1 gwei;
-        assertEq(
-            address(staker).balance - stakerBalanceBefore,
-            expected,
-            "staker should receive REL-worth of ETH on completion"
-        );
-        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be drained");
+        // 5b. Completing as shares reverts: the EigenPodManager refuses to re-credit shares
+        //     to a disabled pod.
+        cheats.prank(address(staker));
+        cheats.expectRevert(IEigenPodManagerErrors.RestakingDisabled.selector);
+        delegationManager.completeQueuedWithdrawal(withdrawals[0], tokens, false);
+
+        // 6. The value is recovered via the non-restaked sweep: the entire pod balance
+        //    (the exited validator's ETH that was formerly tracked as REL) is sweepable.
+        address recipient = cheats.addr(0xD15AB1ED);
+        cheats.prank(address(staker));
+        pod.withdrawNonRestakedBalance(recipient);
+        assertEq(recipient.balance, podBalanceBefore, "owner recovers full pod balance via sweep");
+        assertEq(address(pod).balance, 0, "pod fully drained");
     }
 
     /// Once disabled, the pod owner can request a consolidation whose target is NOT

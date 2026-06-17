@@ -430,9 +430,14 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// Once disabled:
     /// - `startCheckpoint`, `verifyWithdrawalCredentials`, and `verifyStaleBalance` revert, so no
     ///   new shares can be minted into the pod.
+    /// - `restakedExecutionLayerGwei` is zeroed, so all ETH the pod holds is treated as non-restaked.
     /// - `withdrawNonRestakedBalance` allows the owner to directly sweep any ETH that arrives at the
     ///   pod (e.g. from validator exits) without going through the DelegationManager withdrawal queue.
     /// - `requestConsolidation` allows consolidations to validators outside this pod.
+    /// - any beacon-chain-ETH withdrawal still queued in the DelegationManager becomes inert: it
+    ///   cannot be completed as tokens (`withdrawRestakedBeaconChainETH` reverts with REL zeroed) nor
+    ///   as shares (the EigenPodManager blocks re-crediting shares to a disabled pod). Its value is
+    ///   recovered through the non-restaked sweep instead.
     /// @dev The call requires:
     /// - the pod is not already permanently disabled
     /// - no active checkpoint

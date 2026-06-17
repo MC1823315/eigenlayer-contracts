@@ -454,6 +454,17 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         }
 
         restakingDisabled = true;
+
+        // Zero out the restaked execution layer balance. Once disabled, the pod no longer restakes,
+        // so all ETH it holds (now and in future, e.g. from validator exits) is treated as
+        // non-restaked and is sweepable by the owner via `withdrawNonRestakedBalance`. Zeroing REL
+        // also makes `withdrawRestakedBeaconChainETH` revert, so any still-queued beacon-chain-ETH
+        // withdrawal can no longer be completed as tokens through the DelegationManager; combined with
+        // the EigenPodManager blocking completion as shares, such withdrawals become inert. Their
+        // value is fully recoverable via the non-restaked sweep, and the disable preconditions
+        // (full slashing factor, all withdrawals past `slashableUntil`) ensure no value is lost.
+        restakedExecutionLayerGwei = 0;
+
         emit RestakingPermanentlyDisabled();
     }
 

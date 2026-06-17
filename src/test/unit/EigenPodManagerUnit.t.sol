@@ -281,6 +281,17 @@ contract EigenPodManagerUnitTests_ShareUpdateTests is EigenPodManagerUnitTests {
         assertEq(eigenPodManager.podOwnerDepositShares(defaultStaker), int(shares), "Incorrect number of shares added");
     }
 
+    function test_addShares_revert_restakingDisabled() public {
+        // Deploy a pod for the staker, then mark its restaking as disabled.
+        IEigenPod pod = _deployAndReturnEigenPodForStaker(defaultStaker);
+        EigenPodMock(payable(address(pod))).setRestakingDisabled(true);
+
+        // Completing a withdrawal as shares into a disabled pod must revert.
+        cheats.prank(address(delegationManagerMock));
+        cheats.expectRevert(IEigenPodManagerErrors.RestakingDisabled.selector);
+        eigenPodManager.addShares(defaultStaker, beaconChainETHStrategy, 1 gwei);
+    }
+
     function test_addShares_negativeInitial() public {
         _initializePodWithShares(defaultStaker, -1);
 

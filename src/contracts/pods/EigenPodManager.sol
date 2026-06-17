@@ -168,6 +168,13 @@ contract EigenPodManager is
         uint256 shares
     ) external onlyDelegationManager nonReentrant returns (uint256, uint256) {
         require(strategy == beaconChainETHStrategy, InvalidStrategy());
+        // A pod that has permanently disabled restaking is frozen: no new shares may be minted into
+        // it. Completing a queued withdrawal as shares would re-credit deposit shares to the pod owner,
+        // violating that invariant, so such completions must be received as tokens instead. A staker
+        // can only hold a beacon-chain-ETH withdrawal if they have a pod, so absence of a pod implies
+        // restaking was never disabled; the zero-address staker case is handled within `_addShares`.
+        IEigenPod pod = ownerToPod[staker];
+        require(address(pod) == address(0) || !pod.restakingDisabled(), RestakingDisabled());
         return _addShares(staker, shares);
     }
 

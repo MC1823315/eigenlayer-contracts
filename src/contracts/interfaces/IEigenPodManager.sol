@@ -28,6 +28,8 @@ interface IEigenPodManagerErrors {
     error LegacyWithdrawalsNotCompleted();
     /// @dev Thrown when caller is not the proof timestamp setter
     error OnlyProofTimestampSetter();
+    /// @dev Thrown when shares would be added to a pod whose owner has permanently disabled restaking.
+    error RestakingDisabled();
 }
 
 interface IEigenPodManagerEvents {

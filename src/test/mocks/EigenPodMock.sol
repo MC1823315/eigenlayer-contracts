@@ -84,7 +84,11 @@ contract EigenPodMock is IEigenPod, SemVerMixin, Test {
 
     function withdrawNonRestakedBalance(address recipient) external {}
 
-    function restakingDisabled() external view returns (bool) {}
+    bool public restakingDisabled;
+
+    function setRestakingDisabled(bool disabled) external {
+        restakingDisabled = disabled;
+    }
 
     function validatorStatus(bytes calldata pubkey) external view returns (VALIDATOR_STATUS) {}
     function validatorPubkeyToInfo(bytes calldata validatorPubkey) external view returns (ValidatorInfo memory) {}
