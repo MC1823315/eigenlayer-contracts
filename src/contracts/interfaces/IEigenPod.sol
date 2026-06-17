@@ -92,6 +92,10 @@ interface IEigenPodErrors {
     error ActiveBalanceNotCleared();
     /// @dev Thrown when disabling restaking is attempted while the pod owner has a queued withdrawal whose delay has not elapsed.
     error WithdrawalNotCompletable();
+    /// @dev Thrown when disabling restaking is attempted but the pod owner has been beacon-chain
+    /// slashed, OR has a queued beacon-chain-ETH withdrawal whose delegated operator was AVS-slashed
+    /// at or before the withdrawal's `slashableUntil` block.
+    error PodIsSlashed();
 }
 
 interface IEigenPodTypes {
@@ -435,6 +439,13 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// - no positive deposit shares for the pod owner in the EigenPodManager
     /// - every queued withdrawal for the pod owner is past its `slashableUntil` block
     /// (post-slashing-release withdrawals only; legacy withdrawals are not tracked here).
+    /// - the pod owner's `beaconChainSlashingFactor` is full (`WAD`). A previously beacon-chain
+    /// slashed pod owner cannot disable, since slashing accounting is not compatible with the
+    /// share-freezing semantics of disable.
+    /// - for every queued beacon-chain-ETH withdrawal, the operator the withdrawal was delegated
+    /// to had a full (`WAD`) max magnitude for the beacon-chain ETH strategy as of the
+    /// withdrawal's `slashableUntil` block. This prevents staker-level evasion of AVS slashing
+    /// via cross-pod consolidation after disabling.
     function permanentlyDisableRestaking() external;
 
     /// @notice Sweeps all non-restaked ETH out of the pod to `recipient`. Only callable by the

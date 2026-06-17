@@ -1963,13 +1963,21 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         pure
         returns (IDelegationManagerTypes.Withdrawal memory)
     {
+        return _newQueuedWithdrawal(staker, startBlock, address(0));
+    }
+
+    function _newQueuedWithdrawal(address staker, uint32 startBlock, address delegatedTo)
+        internal
+        pure
+        returns (IDelegationManagerTypes.Withdrawal memory)
+    {
         IStrategy[] memory strategies = new IStrategy[](1);
         strategies[0] = BEACON_ETH_STRATEGY;
         uint[] memory scaled = new uint[](1);
         scaled[0] = 1 ether;
         return IDelegationManagerTypes.Withdrawal({
             staker: staker,
-            delegatedTo: address(0),
+            delegatedTo: delegatedTo,
             withdrawer: staker,
             nonce: 0,
             startBlock: startBlock,
@@ -2041,6 +2049,66 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
 
         eigenPod.permanentlyDisableRestaking();
         assertTrue(eigenPod.restakingDisabled(), "should disable when shares are negative");
+    }
+
+    function test_permanentlyDisableRestaking_revert_podIsSlashed() public {
+        _wireDisablePreconditions();
+        // Any factor below WAD must block disable. We use 0.99 WAD here as a representative value.
+        eigenPodManagerMock.setBeaconChainSlashingFactor(address(this), uint64(0.99e18));
+
+        cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_revert_queuedWithdrawalAVSSlashed() public {
+        _wireDisablePreconditions();
+
+        // Roll forward so we have headroom to set startBlocks in the past
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Push a queued withdrawal that IS past delay but whose operator was AVS-slashed
+        // for BC ETH at `slashableUntil`. Disable must reject it.
+        address operator = cheats.addr(0xA1AB);
+        uint32 startBlock = uint32(block.number) - 200;
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock, operator);
+        uint[] memory shares = new uint[](1);
+        shares[0] = 1 ether;
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
+
+        // Set the operator's BC ETH magnitude to 0.5 WAD as of `slashableUntil`. The mock's
+        // `getMaxMagnitudesAtBlock` returns the latest snapshot at-or-before the queried block,
+        // so writing it now (at a later block) is fine — the snapshot for an earlier block
+        // would resolve to whatever was set most recently before that block.
+        cheats.roll(startBlock + 50);
+        allocationManagerMock.setMaxMagnitude(operator, BEACON_ETH_STRATEGY, uint64(0.5e18));
+        cheats.roll(startBlock + 1000);
+
+        cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_succeeds_queuedWithdrawalUnslashed() public {
+        _wireDisablePreconditions();
+
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Operator never slashed → magnitude defaults to WAD via setMaxMagnitude.
+        address operator = cheats.addr(0xA1AB);
+        uint32 startBlock = uint32(block.number) - 200;
+
+        cheats.roll(startBlock);
+        allocationManagerMock.setMaxMagnitude(operator, BEACON_ETH_STRATEGY, uint64(1e18));
+        cheats.roll(startBlock + 1000);
+
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock, operator);
+        uint[] memory shares = new uint[](1);
+        shares[0] = 1 ether;
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
+
+        eigenPod.permanentlyDisableRestaking();
+        assertTrue(eigenPod.restakingDisabled(), "should disable when operator not slashed");
     }
 
     function test_permanentlyDisableRestaking_revert_withdrawalNotCompletable() public {

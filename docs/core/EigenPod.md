@@ -484,7 +484,10 @@ The preconditions ensure that no in-flight share-mutating operation can be inval
 * Pod MUST NOT already be permanently disabled (`AlreadyDisabled`)
 * `currentCheckpointTimestamp` MUST be 0 (`CheckpointAlreadyActive`)
 * `EigenPodManager.stakerDepositShares(podOwner, beaconChainETHStrategy)` MUST be 0 (`ActiveBalanceNotCleared`)
-* For every queued withdrawal returned by `DelegationManager.getQueuedWithdrawalRoots(podOwner)`: `block.number > startBlock + minWithdrawalDelayBlocks` (`WithdrawalNotCompletable`)
+* `EigenPodManager.beaconChainSlashingFactor(podOwner)` MUST equal `WAD` (`PodIsSlashed`). Beacon-chain slashing accounting is incompatible with the share-freezing semantics of disable; a pod that has been BC-slashed cannot be disabled.
+* For every queued withdrawal returned by `DelegationManager.getQueuedWithdrawalRoots(podOwner)`:
+    * `block.number > startBlock + minWithdrawalDelayBlocks` (`WithdrawalNotCompletable`)
+    * For each strategy in the withdrawal that equals `beaconChainETHStrategy`, `AllocationManager.getMaxMagnitudesAtBlock(delegatedTo, [bcEth], startBlock + minWithdrawalDelayBlocks)` MUST equal `WAD` (`PodIsSlashed`). This prevents AVS-slashing evasion: a staker delegated to a slashed operator cannot disable, cross-pod consolidate the validator out, and abandon the slashed-rate queued claim.
 
 #### `withdrawNonRestakedBalance`
 

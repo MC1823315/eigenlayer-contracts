@@ -6,14 +6,22 @@ import "@openzeppelin-upgrades/contracts/security/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import "../libraries/BeaconChainProofs.sol";
+import "../libraries/SlashingLib.sol";
 
 import "../interfaces/IETHPOSDeposit.sol";
 import "../interfaces/IEigenPodManager.sol";
 import "../interfaces/IDelegationManager.sol";
+import "../interfaces/IAllocationManager.sol";
 import "../interfaces/IPausable.sol";
 
 import "./EigenPodPausingConstants.sol";
 import "./EigenPodStorage.sol";
+
+/// @dev Minimal local view interface to read DelegationManager's `allocationManager` immutable
+/// without inflating IDelegationManager (which can't import IAllocationManager due to a cycle).
+interface IDelegationManagerWithAM {
+    function allocationManager() external view returns (IAllocationManager);
+}
 
 /// @title The implementation contract used for restaking beacon chain ETH on EigenLayer
 /// @author Layr Labs, Inc.
@@ -398,17 +406,51 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
             ActiveBalanceNotCleared()
         );
 
+        // A pod owner that has previously been beacon-chain slashed cannot disable. The slashing
+        // factor permanently scales every share-as-tokens conversion against this pod, and disable
+        // freezes future checkpoints — there is no way for the protocol to keep that scaling in
+        // sync with subsequent share movements while disabled. Disabling the pod from a non-WAD
+        // slashing factor would either trap correctly-slashed value or allow it to be redirected
+        // out via cross-pod consolidation. Either way, the accounting is not safe.
+        require(eigenPodManager.beaconChainSlashingFactor(podOwner) == WAD, PodIsSlashed());
+
         // Every queued withdrawal for the pod owner must be past `slashableUntil`. After this
         // block, the withdrawal's slashing factor is locked at the historical block, so future
         // beacon-chain slashings cannot affect the amount the owner ultimately receives.
         // Note: `getQueuedWithdrawalRoots` returns post-slashing-release withdrawals only; any
         // legacy pre-slashing-release withdrawals are not tracked here.
+        //
+        // Additionally, for any queued withdrawal that includes the beacon-chain ETH strategy,
+        // the operator the withdrawal was delegated to must NOT have been AVS-slashed for that
+        // strategy as of `slashableUntil`. Otherwise, the staker could disable, cross-pod
+        // consolidate the validator out, and abandon the slashed-rate queued claim — sidestepping
+        // the slashing they were supposed to absorb.
         IDelegationManager dm = eigenPodManager.delegationManager();
+        IAllocationManager am = IDelegationManagerWithAM(address(dm)).allocationManager();
+        IStrategy bcEth = eigenPodManager.beaconChainETHStrategy();
+        IStrategy[] memory bcEthArr = new IStrategy[](1);
+        bcEthArr[0] = bcEth;
+
         bytes32[] memory roots = dm.getQueuedWithdrawalRoots(podOwner);
         uint32 delay = dm.minWithdrawalDelayBlocks();
         for (uint256 i = 0; i < roots.length; i++) {
             (IDelegationManagerTypes.Withdrawal memory w,) = dm.getQueuedWithdrawal(roots[i]);
             require(uint32(block.number) > w.startBlock + delay, WithdrawalNotCompletable());
+
+            // If the withdrawal was queued while undelegated, no operator-level AVS slashing
+            // applies, so skip the magnitude check. The pod-owner-level BC slashing factor was
+            // already checked above.
+            if (w.delegatedTo == address(0)) continue;
+
+            for (uint256 j = 0; j < w.strategies.length; j++) {
+                if (w.strategies[j] != bcEth) continue;
+                uint64 magnitude = am.getMaxMagnitudesAtBlock({
+                    operator: w.delegatedTo,
+                    strategies: bcEthArr,
+                    blockNumber: w.startBlock + delay
+                })[0];
+                require(magnitude == WAD, PodIsSlashed());
+            }
         }
 
         restakingDisabled = true;
