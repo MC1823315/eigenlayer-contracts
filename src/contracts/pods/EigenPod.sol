@@ -482,10 +482,16 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         // non-restaked and is sweepable by the owner via `withdrawNonRestakedBalance`. Zeroing REL
         // also makes `withdrawRestakedBeaconChainETH` revert, so any still-queued beacon-chain-ETH
         // withdrawal can no longer be completed as tokens through the DelegationManager; combined with
-        // the EigenPodManager blocking completion as shares, such withdrawals become inert. Their
-        // value is fully recoverable via the non-restaked sweep, and the disable preconditions
+        // the EigenPodManager blocking completion as shares, such withdrawals can never be completed.
+        // Their value is fully recoverable via the non-restaked sweep, and the disable preconditions
         // (full slashing factor, all withdrawals past `slashableUntil`) ensure no value is lost.
         restakedExecutionLayerGwei = 0;
+
+        // Clear the pod owner's now-uncompletable beacon-chain-ETH withdrawals from the
+        // DelegationManager's queue. Their deposit shares and operator delegation were already
+        // decremented at queue time, so this only removes the dead queue entries; the value is
+        // recovered via the non-restaked sweep above. Pure-LST withdrawals are left untouched.
+        eigenPodManager.clearQueuedWithdrawalsForDisabledPod(podOwner);
 
         emit RestakingPermanentlyDisabled();
     }

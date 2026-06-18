@@ -218,4 +218,17 @@ contract DelegationManagerMock is Test {
     {
         return (_queuedWithdrawalByRoot[withdrawalRoot], _queuedWithdrawalSharesByRoot[withdrawalRoot]);
     }
+
+    /// @notice Records the most recent staker that `clearQueuedWithdrawalsForDisabledPod` was called for.
+    address public lastClearedDisabledPod;
+    uint public clearQueuedWithdrawalsCallCount;
+
+    /// @notice Test mock: clears the staker's queued withdrawal roots, mirroring the real DM's
+    /// removal of beacon-chain-ETH queue entries on pod disable. The disable preconditions ensure
+    /// any beacon-chain-ETH withdrawal reaching here is beacon-chain-ETH only.
+    function clearQueuedWithdrawalsForDisabledPod(address staker) external {
+        lastClearedDisabledPod = staker;
+        clearQueuedWithdrawalsCallCount++;
+        delete _queuedWithdrawalRoots[staker];
+    }
 }

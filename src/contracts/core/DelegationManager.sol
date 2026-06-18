@@ -276,6 +276,37 @@ contract DelegationManager is
     }
 
     /// @inheritdoc IDelegationManager
+    function clearQueuedWithdrawalsForDisabledPod(
+        address staker
+    ) external onlyEigenPodManager nonReentrant {
+        bytes32[] memory roots = getQueuedWithdrawalRoots(staker);
+        for (uint256 i = 0; i < roots.length; i++) {
+            Withdrawal storage w = _queuedWithdrawals[roots[i]];
+
+            // Only clear withdrawals that include the beacon-chain-ETH strategy. Pure-LST withdrawals
+            // route through the StrategyManager and are unaffected by the pod disabling. The EigenPod's
+            // disable preconditions guarantee any beacon-chain-ETH withdrawal here is beacon-chain-ETH
+            // only (mixed withdrawals are rejected), so a single strategy check suffices.
+            bool hasBcEth = false;
+            for (uint256 j = 0; j < w.strategies.length; j++) {
+                if (w.strategies[j] == beaconChainETHStrategy) {
+                    hasBcEth = true;
+                    break;
+                }
+            }
+            if (!hasBcEth) continue;
+
+            // Deposit shares and operator delegation were already decremented at queue time, so we
+            // only remove the queue entry. The withdrawal's value is recovered by the pod owner via
+            // `EigenPod.withdrawNonRestakedBalance`.
+            _stakerQueuedWithdrawalRoots[staker].remove(roots[i]);
+            delete _queuedWithdrawals[roots[i]];
+            delete pendingWithdrawals[roots[i]];
+            emit QueuedWithdrawalClearedForDisabledPod(roots[i]);
+        }
+    }
+
+    /// @inheritdoc IDelegationManager
     function slashOperatorShares(
         address operator,
         OperatorSet calldata operatorSet,

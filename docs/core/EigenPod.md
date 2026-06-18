@@ -454,7 +454,11 @@ While restaking is disabled:
 * `withdrawNonRestakedBalance` allows the Pod Owner to sweep any ETH that arrives at the pod (validator exits, fees, direct sends) without going through the `DelegationManager` withdrawal queue.
 * `requestConsolidation` lifts its "target validator must be ACTIVE in this pod" requirement, allowing cross-pod consolidations.
 
-In-flight withdrawals are NOT blocked: `EigenPodManager.withdrawSharesAsTokens` (and the `EigenPod.withdrawRestakedBeaconChainETH` path it uses) is not gated by the disable flag. As long as `restakedExecutionLayerGwei` is credited before the disable lands, the Pod Owner can complete previously-queued `DelegationManager` withdrawals after disabling.
+Once disabled, the pod is fully frozen with respect to the share-based withdrawal queue:
+* `restakedExecutionLayerGwei` (REL) is zeroed, so all ETH the pod holds is treated as non-restaked and is sweepable via `withdrawNonRestakedBalance`.
+* `EigenPodManager.addShares` reverts for a disabled pod, so a queued `DelegationManager` withdrawal can never be completed as shares (which would re-credit deposit shares to a frozen pod).
+* Disabling clears the Pod Owner's queued beacon-chain-ETH withdrawals from the `DelegationManager` queue. Their deposit shares and operator delegation were already decremented when the withdrawal was queued, so clearing only removes the now-uncompletable queue entries; no value is re-credited. The value is recovered by the Pod Owner via `withdrawNonRestakedBalance`. Pure-LST withdrawals are not cleared, as they are unaffected by the pod disabling.
+* To keep this safe, disabling is rejected if any queued withdrawal mixes the beacon-chain-ETH strategy with another strategy (`MixedWithdrawalPending`), since the non-beacon-chain value of such a withdrawal cannot be recovered from the pod. Mixed withdrawals must be completed before disabling.
 
 _Methods:_
 * [`permanentlyDisableRestaking`](#permanentlydisablerestaking)

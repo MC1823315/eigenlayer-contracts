@@ -127,6 +127,13 @@ interface IEigenPodManager is
         int256 balanceDeltaWei
     ) external;
 
+    /// @notice Clears a pod owner's queued beacon-chain-ETH withdrawals when their EigenPod
+    /// permanently disables restaking. Forwards to the DelegationManager.
+    /// @dev Callable only by the pod owner's EigenPod.
+    function clearQueuedWithdrawalsForDisabledPod(
+        address podOwner
+    ) external;
+
     /// @notice Sets the address that can set proof timestamps
     function setProofTimestampSetter(
         address newProofTimestampSetter

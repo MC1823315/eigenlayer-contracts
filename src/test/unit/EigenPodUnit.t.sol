@@ -2146,6 +2146,31 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertTrue(eigenPod.restakingDisabled(), "should disable past delay");
     }
 
+    function test_permanentlyDisableRestaking_clearsQueuedWithdrawals() public {
+        _wireDisablePreconditions();
+
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Queue a completable beacon-chain-ETH withdrawal, then disable. Disable must invoke the
+        // DelegationManager cleanup, which removes the now-uncompletable queue entry.
+        uint32 startBlock = uint32(block.number) - 200;
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock);
+        uint[] memory shares = new uint[](1);
+        shares[0] = 1 ether;
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
+        assertEq(delegationManagerMock.getQueuedWithdrawalRoots(address(this)).length, 1, "withdrawal should be queued");
+
+        eigenPod.permanentlyDisableRestaking();
+
+        assertTrue(eigenPod.restakingDisabled(), "should disable");
+        assertEq(delegationManagerMock.clearQueuedWithdrawalsCallCount(), 1, "cleanup should be called once");
+        assertEq(delegationManagerMock.lastClearedDisabledPod(), address(this), "cleanup called for pod owner");
+        assertEq(
+            delegationManagerMock.getQueuedWithdrawalRoots(address(this)).length, 0, "queue entry should be cleared"
+        );
+    }
+
     function test_permanentlyDisableRestaking_revert_mixedWithdrawal() public {
         _wireDisablePreconditions();
 

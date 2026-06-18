@@ -99,4 +99,10 @@ contract EigenPodManagerMock is Test, Pausable {
     function setPectraForkTimestamp(uint64 _pectraForkTimestamp) external {
         pectraForkTimestamp = _pectraForkTimestamp;
     }
+
+    function clearQueuedWithdrawalsForDisabledPod(address podOwner) external {
+        if (address(delegationManager) != address(0)) {
+            delegationManager.clearQueuedWithdrawalsForDisabledPod(podOwner);
+        }
+    }
 }

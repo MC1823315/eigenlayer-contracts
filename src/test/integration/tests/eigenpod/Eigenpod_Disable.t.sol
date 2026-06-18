@@ -94,10 +94,10 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
         pod.startCheckpoint(false);
     }
 
-    /// Disabling renders any in-flight beacon-chain-ETH withdrawal inert: it can be
-    /// completed neither as tokens (REL is zeroed on disable, so withdrawRestakedBeaconChainETH
-    /// reverts) nor as shares (the EigenPodManager blocks re-crediting a disabled pod). The
-    /// value is instead recovered by the owner via withdrawNonRestakedBalance.
+    /// Disabling clears any in-flight beacon-chain-ETH withdrawal from the DelegationManager
+    /// queue (its shares and delegation were already decremented at queue time), so the
+    /// withdrawal can no longer be completed at all. The value is instead recovered by the
+    /// owner via withdrawNonRestakedBalance.
     function test_Queue_Exit_Checkpoint_Disable_Complete(uint24 _rand) public rand(_rand) {
         (User staker, IStrategy[] memory strategies, uint[] memory tokenBalances) = _newRandomStaker();
         EigenPod pod = staker.pod();
@@ -127,26 +127,31 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
         //    past slashableUntil so disable's per-withdrawal check passes. Disable zeroes REL.
         _rollBlocksForCompleteWithdrawals(withdrawals);
 
+        assertEq(delegationManager.getQueuedWithdrawalRoots(address(staker)).length, 1, "withdrawal queued before disable");
+
         cheats.prank(address(staker));
         pod.permanentlyDisableRestaking();
         assertTrue(pod.restakingDisabled(), "pod should be disabled");
         assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be zeroed on disable");
+
+        // The queued withdrawal must have been cleared from the DelegationManager queue by disable.
+        assertEq(
+            delegationManager.getQueuedWithdrawalRoots(address(staker)).length, 0, "withdrawal should be cleared on disable"
+        );
 
         IERC20[] memory tokens = new IERC20[](strategies.length);
         for (uint i = 0; i < strategies.length; i++) {
             tokens[i] = strategies[i] == BEACONCHAIN_ETH_STRAT ? NATIVE_ETH : strategies[i].underlyingToken();
         }
 
-        // 5a. Completing as tokens reverts: REL is zeroed, so withdrawRestakedBeaconChainETH
-        //     has nothing to pay out.
+        // 5. The withdrawal was removed from the queue, so completing it (either way) reverts as
+        //    no-longer-queued.
         cheats.prank(address(staker));
-        cheats.expectRevert(IEigenPodErrors.InsufficientWithdrawableBalance.selector);
+        cheats.expectRevert(IDelegationManagerErrors.WithdrawalNotQueued.selector);
         delegationManager.completeQueuedWithdrawal(withdrawals[0], tokens, true);
 
-        // 5b. Completing as shares reverts: the EigenPodManager refuses to re-credit shares
-        //     to a disabled pod.
         cheats.prank(address(staker));
-        cheats.expectRevert(IEigenPodManagerErrors.RestakingDisabled.selector);
+        cheats.expectRevert(IDelegationManagerErrors.WithdrawalNotQueued.selector);
         delegationManager.completeQueuedWithdrawal(withdrawals[0], tokens, false);
 
         // 6. The value is recovered via the non-restaked sweep: the entire pod balance
