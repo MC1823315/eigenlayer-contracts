@@ -435,6 +435,29 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         uint32 delay = dm.minWithdrawalDelayBlocks();
         for (uint256 i = 0; i < roots.length; i++) {
             (IDelegationManagerTypes.Withdrawal memory w,) = dm.getQueuedWithdrawal(roots[i]);
+
+            // Classify the withdrawal's strategies. `getQueuedWithdrawalRoots` returns ALL of the pod
+            // owner's withdrawals, including pure-LST withdrawals that route through the StrategyManager
+            // and are wholly unaffected by disabling this pod.
+            bool hasBcEth = false;
+            bool hasOther = false;
+            for (uint256 j = 0; j < w.strategies.length; j++) {
+                if (w.strategies[j] == bcEth) hasBcEth = true;
+                else hasOther = true;
+            }
+
+            // Pure-LST withdrawals are unaffected by disable; ignore them entirely.
+            if (!hasBcEth) continue;
+
+            // A withdrawal mixing beacon-chain-ETH with another strategy cannot be handled: disable
+            // cannot recover the non-beacon-chain value from the pod, and completing the withdrawal
+            // would revert on the now-frozen beacon-chain-ETH leg, trapping the rest. Such withdrawals
+            // must be completed before disabling.
+            require(!hasOther, MixedWithdrawalPending());
+
+            // The remaining checks apply to beacon-chain-ETH withdrawals. They must be past
+            // `slashableUntil` so their slashing factor is locked and future beacon-chain slashings
+            // cannot affect the amount the owner ultimately receives.
             require(uint32(block.number) > w.startBlock + delay, WithdrawalNotCompletable());
 
             // If the withdrawal was queued while undelegated, no operator-level AVS slashing
@@ -442,15 +465,14 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
             // already checked above.
             if (w.delegatedTo == address(0)) continue;
 
-            for (uint256 j = 0; j < w.strategies.length; j++) {
-                if (w.strategies[j] != bcEth) continue;
-                uint64 magnitude = am.getMaxMagnitudesAtBlock({
-                    operator: w.delegatedTo,
-                    strategies: bcEthArr,
-                    blockNumber: w.startBlock + delay
-                })[0];
-                require(magnitude == WAD, PodIsSlashed());
-            }
+            // The withdrawal is beacon-chain-ETH only, so its delegated operator must not have been
+            // AVS-slashed for that strategy as of `slashableUntil`.
+            uint64 magnitude = am.getMaxMagnitudesAtBlock({
+                operator: w.delegatedTo,
+                strategies: bcEthArr,
+                blockNumber: w.startBlock + delay
+            })[0];
+            require(magnitude == WAD, PodIsSlashed());
         }
 
         restakingDisabled = true;

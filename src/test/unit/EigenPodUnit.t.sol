@@ -2146,6 +2146,68 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertTrue(eigenPod.restakingDisabled(), "should disable past delay");
     }
 
+    function test_permanentlyDisableRestaking_revert_mixedWithdrawal() public {
+        _wireDisablePreconditions();
+
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // Queue a withdrawal that is past delay but mixes the beacon-chain-ETH strategy with a
+        // non-beacon-chain strategy (e.g. an LST). Disable cannot recover the LST value from the
+        // pod, so it must reject the withdrawal.
+        uint32 startBlock = uint32(block.number) - 200;
+        IStrategy lst = IStrategy(cheats.addr(0x15A7));
+        IStrategy[] memory strategies = new IStrategy[](2);
+        strategies[0] = BEACON_ETH_STRATEGY;
+        strategies[1] = lst;
+        uint[] memory scaled = new uint[](2);
+        scaled[0] = 1 ether;
+        scaled[1] = 1 ether;
+        IDelegationManagerTypes.Withdrawal memory w = IDelegationManagerTypes.Withdrawal({
+            staker: address(this),
+            delegatedTo: address(0),
+            withdrawer: address(this),
+            nonce: 0,
+            startBlock: startBlock,
+            strategies: strategies,
+            scaledShares: scaled
+        });
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, scaled);
+
+        cheats.expectRevert(IEigenPodErrors.MixedWithdrawalPending.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    function test_permanentlyDisableRestaking_pureLSTWithdrawal_succeeds() public {
+        _wireDisablePreconditions();
+
+        cheats.roll(block.number + 1000);
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+
+        // A pure-LST withdrawal (no beacon-chain-ETH strategy) routes through the StrategyManager
+        // and is unaffected by disabling this pod. It must NOT block disable — even though it is
+        // not past the withdrawal delay, since the delay check only applies to beacon-chain-ETH.
+        uint32 startBlock = uint32(block.number) - 50;
+        IStrategy lst = IStrategy(cheats.addr(0x15A7));
+        IStrategy[] memory strategies = new IStrategy[](1);
+        strategies[0] = lst;
+        uint[] memory scaled = new uint[](1);
+        scaled[0] = 1 ether;
+        IDelegationManagerTypes.Withdrawal memory w = IDelegationManagerTypes.Withdrawal({
+            staker: address(this),
+            delegatedTo: address(0),
+            withdrawer: address(this),
+            nonce: 0,
+            startBlock: startBlock,
+            strategies: strategies,
+            scaledShares: scaled
+        });
+        delegationManagerMock.pushQueuedWithdrawal(address(this), w, scaled);
+
+        eigenPod.permanentlyDisableRestaking();
+        assertTrue(eigenPod.restakingDisabled(), "pure-LST withdrawal must not block disable");
+    }
+
     ///
     ///                Post-disable guards on share-minting paths
     ///

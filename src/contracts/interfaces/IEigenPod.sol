@@ -92,6 +92,10 @@ interface IEigenPodErrors {
     error ActiveBalanceNotCleared();
     /// @dev Thrown when disabling restaking is attempted while the pod owner has a queued withdrawal whose delay has not elapsed.
     error WithdrawalNotCompletable();
+    /// @dev Thrown when disabling restaking is attempted while the pod owner has a queued withdrawal that
+    /// includes a strategy other than the beacon-chain-ETH strategy. Such withdrawals must be completed
+    /// first, since disable cannot recover their non-beacon-chain-ETH value.
+    error MixedWithdrawalPending();
     /// @dev Thrown when disabling restaking is attempted but the pod owner has been beacon-chain
     /// slashed, OR has a queued beacon-chain-ETH withdrawal whose delegated operator was AVS-slashed
     /// at or before the withdrawal's `slashableUntil` block.
