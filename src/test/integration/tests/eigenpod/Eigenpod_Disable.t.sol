@@ -164,9 +164,9 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
     }
 
     /// Once disabled, the pod owner can request a consolidation whose target is NOT
-    /// active in this pod — exactly the cross-pod consolidation use case the disable
+    /// active in this pod — exactly the external consolidation use case the disable
     /// feature was designed to enable.
-    function test_Disabled_AllowsCrossPodConsolidation(uint24 _rand) public rand(_rand) {
+    function test_Disabled_AllowsExternalConsolidation(uint24 _rand) public rand(_rand) {
         (User source, IStrategy[] memory strategies, uint[] memory tokenBalances) = _newRandomStaker();
         EigenPod sourcePod = source.pod();
 

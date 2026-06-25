@@ -411,7 +411,7 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         // freezes future checkpoints — there is no way for the protocol to keep that scaling in
         // sync with subsequent share movements while disabled. Disabling the pod from a non-WAD
         // slashing factor would either trap correctly-slashed value or allow it to be redirected
-        // out via cross-pod consolidation. Either way, the accounting is not safe.
+        // out via external consolidation. Either way, the accounting is not safe.
         require(eigenPodManager.beaconChainSlashingFactor(podOwner) == WAD, PodIsSlashed());
 
         // Every queued withdrawal for the pod owner must be past `slashableUntil`. After this
@@ -422,9 +422,9 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         //
         // Additionally, for any queued withdrawal that includes the beacon-chain ETH strategy,
         // the operator the withdrawal was delegated to must NOT have been AVS-slashed for that
-        // strategy as of `slashableUntil`. Otherwise, the staker could disable, cross-pod
-        // consolidate the validator out, and abandon the slashed-rate queued claim — sidestepping
-        // the slashing they were supposed to absorb.
+        // strategy as of `slashableUntil`. Otherwise, the staker could disable, consolidate the
+        // validator out to an external target, and abandon the slashed-rate queued claim —
+        // sidestepping the slashing they were supposed to absorb.
         IDelegationManager dm = eigenPodManager.delegationManager();
         IAllocationManager am = IDelegationManagerWithAM(address(dm)).allocationManager();
         IStrategy bcEth = eigenPodManager.beaconChainETHStrategy();
@@ -501,8 +501,10 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         address recipient
     ) external onlyEigenPodOwner {
         require(restakingDisabled, RestakingNotDisabled());
-        // Pod ETH not yet credited as shares. Anything in `restakedExecutionLayerGwei` is reserved
-        // for the DelegationManager withdrawal flow and stays put.
+        // Sweep the pod's full balance. `restakedExecutionLayerGwei` is always 0 here: disable zeroes
+        // it, and it can only be raised again by completing a checkpoint, which is locked while
+        // disabled. The subtraction is kept to mirror the general "free balance" formula and as a
+        // defensive no-op should that invariant ever weaken.
         uint256 amountWei = address(this).balance - (uint256(restakedExecutionLayerGwei) * GWEI_TO_WEI);
         if (amountWei == 0) return;
         emit NonRestakedBalanceWithdrawn(recipient, amountWei);

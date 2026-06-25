@@ -2296,7 +2296,7 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
     }
 
     ///
-    ///                Cross-pod consolidation exception
+    ///                External consolidation exception
     ///
 
     function test_disabled_consolidation_targetOutsidePodAllowed() public {
