@@ -30,6 +30,10 @@ interface IDelegationManagerErrors {
 
     /// @dev Thrown when attempting to execute an action that was not queued.
     error WithdrawalNotQueued();
+    /// @dev Thrown when clearing a disabled pod's queue encounters a withdrawal that mixes the
+    /// beacon-chain-ETH strategy with another strategy, whose non-beacon-chain value cannot be
+    /// safely cleared. Such withdrawals are rejected at disable time and must never reach here.
+    error MixedWithdrawalNotClearable();
     /// @dev Thrown when caller cannot undelegate on behalf of a staker.
     error CallerCannotUndelegate();
     /// @dev Thrown when two array parameters have mismatching lengths.

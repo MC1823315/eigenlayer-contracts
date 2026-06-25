@@ -7745,11 +7745,8 @@ contract DelegationManagerUnitTests_clearQueuedWithdrawalsForDisabledPod is Dele
         _registerOperatorWithBaseDetails(defaultOperator);
         _delegateToOperatorWhoAcceptsAllStakers(defaultStaker, defaultOperator);
 
-        (QueuedWithdrawalParams[] memory params,, bytes32 root) = _setUpQueueWithdrawalsSingleStrat({
-            staker: defaultStaker,
-            strategy: strategyMock,
-            depositSharesToWithdraw: depositAmount
-        });
+        (QueuedWithdrawalParams[] memory params,, bytes32 root) =
+            _setUpQueueWithdrawalsSingleStrat({staker: defaultStaker, strategy: strategyMock, depositSharesToWithdraw: depositAmount});
         cheats.prank(defaultStaker);
         delegationManager.queueWithdrawals(params);
         assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "LST withdrawal should be queued");
@@ -7766,5 +7763,33 @@ contract DelegationManagerUnitTests_clearQueuedWithdrawalsForDisabledPod is Dele
         cheats.prank(address(eigenPodManagerMock));
         delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
         assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 0, "still empty");
+    }
+
+    /// @notice Defense-in-depth: a withdrawal mixing beacon-chain-ETH with another strategy must
+    /// revert rather than be cleared, since its non-beacon-chain leg cannot be recovered once the
+    /// queue entry is deleted. The EigenPod's disable preconditions reject such withdrawals before
+    /// they reach here, so this guards against a future caller or an upstream regression.
+    function test_Revert_mixedWithdrawal() public {
+        uint depositAmount = 10 ether;
+        IStrategy[] memory strategies = new IStrategy[](2);
+        strategies[0] = beaconChainETHStrategy;
+        strategies[1] = strategyMock;
+        uint[] memory amounts = new uint[](2);
+        amounts[0] = depositAmount;
+        amounts[1] = depositAmount;
+
+        _depositIntoStrategies(defaultStaker, strategies, amounts);
+        _registerOperatorWithBaseDetails(defaultOperator);
+        _delegateToOperatorWhoAcceptsAllStakers(defaultStaker, defaultOperator);
+
+        (QueuedWithdrawalParams[] memory params,,) =
+            _setUpQueueWithdrawals({staker: defaultStaker, strategies: strategies, depositWithdrawalAmounts: amounts});
+        cheats.prank(defaultStaker);
+        delegationManager.queueWithdrawals(params);
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "mixed withdrawal should be queued");
+
+        cheats.expectRevert(IDelegationManagerErrors.MixedWithdrawalNotClearable.selector);
+        cheats.prank(address(eigenPodManagerMock));
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
     }
 }
