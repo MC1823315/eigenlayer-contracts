@@ -1966,6 +1966,23 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         return _newQueuedWithdrawal(staker, startBlock, address(0));
     }
 
+    /// @dev Registers an unslashed, past-delay beacon-chain-ETH queued withdrawal for `staker` whose
+    /// entitlement covers `coverGwei` of restaked balance. This mirrors production: a pod's restaked
+    /// balance only reaches the disable state by being queued out, which creates a matching
+    /// entitlement. Without this, the net-restaked-vs-entitlement disable check would (correctly)
+    /// see un-backed restaked balance and revert PodIsSlashed.
+    function _registerCoveringWithdrawal(address staker, uint64 coverGwei) internal {
+        delegationManagerMock.setMinWithdrawalDelayBlocks(100);
+        cheats.roll(block.number + 1000);
+        uint32 startBlock = uint32(block.number) - 200;
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(staker, startBlock);
+        // scaledShares are wei-denominated; cover the gwei amount at WAD (undelegated -> WAD magnitude).
+        w.scaledShares[0] = uint(coverGwei) * 1e9;
+        uint[] memory shares = new uint[](1);
+        shares[0] = w.scaledShares[0];
+        delegationManagerMock.pushQueuedWithdrawal(staker, w, shares);
+    }
+
     function _newQueuedWithdrawal(address staker, uint32 startBlock, address delegatedTo)
         internal
         pure
@@ -2051,6 +2068,33 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertTrue(eigenPod.restakingDisabled(), "should disable when shares are negative");
     }
 
+    /// Safety probe for the share-deficit interaction with the net-restaked check: a pod with a
+    /// negative (legacy deficit) share balance that ALSO holds real restaked beacon-chain balance,
+    /// with no covering queued withdrawal, must NOT be disablable — its net restaked balance (the
+    /// validator's proven balance) exceeds its zero entitlement. Without the net-restaked check the
+    /// deposit-share clamp alone (#4) would let this through.
+    function test_permanentlyDisableRestaking_revert_negativeShares_withRestakedBalance() public {
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        address podOwner = pod.podOwner();
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
+
+        // Real restaked balance now backs the pod (prevBeaconBalanceGwei > 0).
+        IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
+        uint64 netGwei = pod.withdrawableRestakedExecutionLayerGwei() + c.prevBeaconBalanceGwei;
+        assertGt(netGwei, 0, "pod should hold restaked balance");
+
+        // Force a legacy share deficit (clamps to 0 for the ActiveBalanceNotCleared precondition).
+        eigenPodManagerMock.setPodOwnerShares(podOwner, -1 ether);
+
+        // No queued withdrawal -> entitlement 0, net restaked > 0 -> disable must revert.
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+        cheats.prank(podOwner);
+        cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
+        pod.permanentlyDisableRestaking();
+    }
+
     function test_permanentlyDisableRestaking_revert_podIsSlashed() public {
         _wireDisablePreconditions();
         // Any factor below WAD must block disable. We use 0.99 WAD here as a representative value.
@@ -2060,32 +2104,43 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         eigenPod.permanentlyDisableRestaking();
     }
 
+    /// AVS slashing reduces a queued withdrawal's entitlement (operator magnitude < WAD at
+    /// `slashableUntil`). When the pod's net restaked balance exceeds that reduced entitlement, the
+    /// excess is unrealized AVS slashing and disable must revert. Here a real validator gives the pod
+    /// a restaked balance; the only queued withdrawal is AVS-slashed to half, so its entitlement does
+    /// not cover the balance.
     function test_permanentlyDisableRestaking_revert_queuedWithdrawalAVSSlashed() public {
-        _wireDisablePreconditions();
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        address podOwner = pod.podOwner();
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
 
-        // Roll forward so we have headroom to set startBlocks in the past
-        cheats.roll(block.number + 1000);
+        // Net restaked balance from the verified validator.
+        IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
+        uint64 netGwei = pod.withdrawableRestakedExecutionLayerGwei() + c.prevBeaconBalanceGwei;
+        assertGt(netGwei, 0, "validator should give the pod a restaked balance");
+
+        // Register a queued withdrawal delegated to an operator AVS-slashed to half: its entitlement
+        // covers only half the net restaked balance, leaving the slashed half unbacked.
+        eigenPodManagerMock.setPodOwnerShares(podOwner, 0);
         delegationManagerMock.setMinWithdrawalDelayBlocks(100);
-
-        // Push a queued withdrawal that IS past delay but whose operator was AVS-slashed
-        // for BC ETH at `slashableUntil`. Disable must reject it.
+        cheats.roll(block.number + 1000);
         address operator = cheats.addr(0xA1AB);
         uint32 startBlock = uint32(block.number) - 200;
-        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(address(this), startBlock, operator);
+        IDelegationManagerTypes.Withdrawal memory w = _newQueuedWithdrawal(podOwner, startBlock, operator);
+        w.scaledShares[0] = uint(netGwei) * 1e9; // full balance in scaled shares...
         uint[] memory shares = new uint[](1);
-        shares[0] = 1 ether;
-        delegationManagerMock.pushQueuedWithdrawal(address(this), w, shares);
-
-        // Set the operator's BC ETH magnitude to 0.5 WAD as of `slashableUntil`. The mock's
-        // `getMaxMagnitudesAtBlock` returns the latest snapshot at-or-before the queried block,
-        // so writing it now (at a later block) is fine — the snapshot for an earlier block
-        // would resolve to whatever was set most recently before that block.
+        shares[0] = w.scaledShares[0];
+        delegationManagerMock.pushQueuedWithdrawal(podOwner, w, shares);
         cheats.roll(startBlock + 50);
-        allocationManagerMock.setMaxMagnitude(operator, BEACON_ETH_STRATEGY, uint64(0.5e18));
+        allocationManagerMock.setMaxMagnitude(operator, BEACON_ETH_STRATEGY, uint64(0.5e18)); // ...halved by slash
         cheats.roll(startBlock + 1000);
 
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+        cheats.prank(podOwner);
         cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
-        eigenPod.permanentlyDisableRestaking();
+        pod.permanentlyDisableRestaking();
     }
 
     function test_permanentlyDisableRestaking_succeeds_queuedWithdrawalUnslashed() public {
@@ -2285,6 +2340,13 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         beaconChain.advanceEpoch();
         StaleBalanceProofs memory proofs = beaconChain.getStaleBalanceProofs(validators[0]);
 
+        // Back the pod's restaked balance with a matching queued withdrawal so disable's
+        // net-restaked-vs-entitlement check passes (this test targets the post-disable guard in
+        // `_startCheckpoint`, not the disable preconditions).
+        IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
+        uint64 netGwei = pod.withdrawableRestakedExecutionLayerGwei() + c.prevBeaconBalanceGwei;
+        eigenPodManagerMock.setPodOwnerShares(pod.podOwner(), 0);
+        _registerCoveringWithdrawal(pod.podOwner(), netGwei);
         _disablePod(pod);
 
         cheats.expectRevert(IEigenPodErrors.RestakingDisabled.selector);
@@ -2386,8 +2448,14 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
 
         assertGt(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be positive after exit checkpoint");
 
-        // Clear deposit shares to satisfy the disable precondition.
+        // Clear deposit shares and back the restaked balance with a matching unslashed queued
+        // withdrawal so disable's net-restaked-vs-entitlement check passes (mirrors production: this
+        // REL exists only because shares were queued out, which created the entitlement).
+        IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
+        int256 netGwei =
+            int256(uint256(pod.withdrawableRestakedExecutionLayerGwei())) + int256(uint256(c.prevBeaconBalanceGwei)) + int256(c.balanceDeltasGwei);
         eigenPodManagerMock.setPodOwnerShares(podOwner, 0);
+        _registerCoveringWithdrawal(podOwner, uint64(uint256(netGwei)));
         _disablePod(pod);
 
         // Disabling zeroes REL: the formerly-reserved ETH is now treated as non-restaked.

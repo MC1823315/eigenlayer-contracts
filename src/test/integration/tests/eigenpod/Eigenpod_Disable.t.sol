@@ -199,3 +199,214 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
         sourcePod.requestConsolidation{value: fee}(cReqs);
     }
 }
+
+/// AVS (EigenLayer) slashing of native ETH has no burn mechanism: the slashed value remains on the
+/// beacon chain / in the pod, while share accounting is reduced. Disabling enables external
+/// consolidation (which moves validator balance out on the beacon chain) and the non-restaked sweep,
+/// either of which could recover the slashed value. To prevent this, disable requires the pod's net
+/// restaked beacon-chain balance (REL + last checkpoint's balance + proven creds since) to be <= the
+/// owner's slashing-adjusted entitlement. An excess is unrealized AVS slashing and blocks disable.
+contract Integration_Eigenpod_Disable_AVSSlashed is IntegrationCheckUtils {
+    using ArrayLib for *;
+
+    AVS avs;
+    OperatorSet operatorSet;
+    User operator;
+    AllocateParams allocateParams;
+
+    function _init() internal override {
+        _configAssetTypes(HOLDS_ETH);
+        _configUserTypes(DEFAULT);
+    }
+
+    function _setupSlashableDelegation(User staker, IStrategy[] memory strategies) internal {
+        (operator,,) = _newRandomOperator();
+        (avs,) = _newRandomAVS();
+        staker.delegateTo(operator);
+        operatorSet = avs.createOperatorSet(strategies);
+        operator.registerForOperatorSet(operatorSet);
+        allocateParams = _genAllocation_AllAvailable(operator, operatorSet);
+        operator.modifyAllocations(allocateParams);
+        _rollBlocksForCompleteAllocation(operator, operatorSet, strategies);
+    }
+
+    /// Launder ordering the check closes: AVS-slash while the staker holds live shares, then launder
+    /// (undelegate -> complete as shares) so all on-chain share accounting collapses to the reduced
+    /// value while the validator's real balance is untouched. Never exit/checkpoint, so REL = 0 and
+    /// the slashed value sits on the beacon chain. Disable must REVERT: net restaked balance (the
+    /// last checkpoint's proven validator balance) exceeds the laundered entitlement.
+    function test_Revert_DisableAfterLaunderingAVSSlash(uint24 _rand) public rand(_rand) {
+        (User staker, IStrategy[] memory strategies, uint[] memory tokenBalances) = _newRandomStaker();
+        EigenPod pod = staker.pod();
+        cheats.assume(tokenBalances[0] >= 64 ether);
+
+        staker.depositIntoEigenlayer(strategies, tokenBalances);
+        _setupSlashableDelegation(staker, strategies);
+
+        SlashingParams memory sp = _genSlashing_Half(operator, operatorSet);
+        avs.slashOperator(sp);
+
+        // Launder: undelegate (queues all shares) + complete as shares (re-credits the reduced amount).
+        Withdrawal[] memory laundered = staker.undelegate();
+        _rollBlocksForCompleteWithdrawals(laundered);
+        for (uint i = 0; i < laundered.length; i++) {
+            staker.completeWithdrawalAsShares(laundered[i]);
+        }
+
+        // Re-queue the (reduced) shares so deposit shares hit 0 for the disable precondition.
+        int reduced = eigenPodManager.podOwnerDepositShares(address(staker));
+        assertGt(reduced, 0, "should have reduced shares re-credited");
+        uint[] memory toQueue = new uint[](1);
+        toQueue[0] = uint(reduced);
+        Withdrawal[] memory requeued = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
+        _rollBlocksForCompleteWithdrawals(requeued);
+
+        assertEq(eigenPodManager.podOwnerDepositShares(address(staker)), 0, "deposit shares cleared");
+        assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL is 0: slashed value still on beacon chain");
+
+        // Net restaked balance (validator never exited) exceeds laundered entitlement -> revert.
+        cheats.prank(address(staker));
+        cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
+        pod.permanentlyDisableRestaking();
+    }
+
+    /// Honest staker delegated to an UNSLASHED operator: net restaked balance equals entitlement,
+    /// so disable succeeds.
+    function test_DisableWhileDelegatedToUnslashedOperator(uint24 _rand) public rand(_rand) {
+        (User staker, IStrategy[] memory strategies, uint[] memory tokenBalances) = _newRandomStaker();
+        EigenPod pod = staker.pod();
+        cheats.assume(tokenBalances[0] >= 64 ether);
+
+        staker.depositIntoEigenlayer(strategies, tokenBalances);
+        uint[] memory depositShares = _calculateExpectedShares(strategies, tokenBalances);
+        _setupSlashableDelegation(staker, strategies);
+
+        // No slash. Queue out all shares and disable while still delegated to the unslashed operator.
+        Withdrawal[] memory withdrawals = staker.queueWithdrawals(strategies, depositShares);
+        _rollBlocksForCompleteWithdrawals(withdrawals);
+
+        cheats.prank(address(staker));
+        pod.permanentlyDisableRestaking();
+        assertTrue(pod.restakingDisabled(), "unslashed operator: disable should succeed");
+    }
+}
+
+/// Reconciliation sweep for the net-restaked-vs-entitlement disable check (#8). For honest, UNSLASHED
+/// pods across varied orderings, the pod's net restaked balance must equal the owner's entitlement,
+/// so disable never falsely reverts PodIsSlashed and the full value remains recoverable. A
+/// false-positive (net != entitlement due to a units/accounting bug) would surface as a revert here.
+contract Integration_Eigenpod_Disable_Reconcile is IntegrationCheckUtils {
+    using ArrayLib for *;
+
+    function _init() internal override {
+        _configAssetTypes(HOLDS_ETH);
+        _configUserTypes(DEFAULT);
+    }
+
+    /// Multiple validators, all exited + checkpointed into REL, then disable.
+    function test_Reconcile_MultiValidator_AllExited(uint24 _rand) public rand(_rand) {
+        (User staker,,) = _newRandomStaker();
+        EigenPod pod = staker.pod();
+
+        (uint40[] memory validators,) = staker.startETH1Validators(3);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.verifyWithdrawalCredentials(validators);
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        // Queue out all shares, exit every validator, checkpoint the exits into REL.
+        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        uint[] memory toQueue = new uint[](1);
+        toQueue[0] = uint(shares);
+        Withdrawal[] memory w = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
+        staker.exitValidators(validators);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        uint podBalanceBefore = address(pod).balance;
+        _rollBlocksForCompleteWithdrawals(w);
+
+        cheats.prank(address(staker));
+        pod.permanentlyDisableRestaking();
+        assertTrue(pod.restakingDisabled(), "all-exited multi-validator: disable should succeed");
+
+        address recipient = cheats.addr(0xA11);
+        cheats.prank(address(staker));
+        pod.withdrawNonRestakedBalance(recipient);
+        assertEq(recipient.balance, podBalanceBefore, "full balance recoverable, nothing stranded");
+    }
+
+    /// Multiple validators, only SOME exited before disable; the rest remain ACTIVE on the beacon
+    /// chain (their balance is in prevBeaconBalanceGwei, not REL). Mixed state must still reconcile.
+    function test_Reconcile_MultiValidator_PartialExit(uint24 _rand) public rand(_rand) {
+        (User staker,,) = _newRandomStaker();
+        EigenPod pod = staker.pod();
+
+        (uint40[] memory validators,) = staker.startETH1Validators(3);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.verifyWithdrawalCredentials(validators);
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        uint[] memory toQueue = new uint[](1);
+        toQueue[0] = uint(shares);
+        Withdrawal[] memory w = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
+
+        // Exit only the first validator; checkpoint so REL gains it while the others stay ACTIVE.
+        uint40[] memory toExit = new uint40[](1);
+        toExit[0] = validators[0];
+        staker.exitValidators(toExit);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        _rollBlocksForCompleteWithdrawals(w);
+
+        cheats.prank(address(staker));
+        pod.permanentlyDisableRestaking();
+        assertTrue(pod.restakingDisabled(), "partial-exit multi-validator: disable should succeed");
+    }
+
+    /// Rewards accrue and are checkpointed AFTER the withdrawal is queued. The reward bumps deposit
+    /// shares again (re-blocking disable until re-queued); once re-queued, net restaked must still
+    /// equal entitlement.
+    function test_Reconcile_RewardsAfterCheckpoint(uint24 _rand) public rand(_rand) {
+        (User staker,,) = _newRandomStaker();
+        EigenPod pod = staker.pod();
+
+        (uint40[] memory validators,) = staker.startETH1Validators(2);
+        beaconChain.advanceEpoch_NoRewards();
+        staker.verifyWithdrawalCredentials(validators);
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        // Queue all current shares.
+        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        uint[] memory toQueue = new uint[](1);
+        toQueue[0] = uint(shares);
+        Withdrawal[] memory first = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
+
+        // Rewards accrue; checkpoint credits them as fresh deposit shares.
+        beaconChain.advanceEpoch();
+        staker.startCheckpoint();
+        staker.completeCheckpoint();
+
+        // Re-queue the reward shares so deposit shares hit 0.
+        Withdrawal[] memory second;
+        int256 rewardShares = eigenPodManager.podOwnerDepositShares(address(staker));
+        if (rewardShares > 0) {
+            uint[] memory rq = new uint[](1);
+            rq[0] = uint(rewardShares);
+            second = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), rq);
+        }
+
+        _rollBlocksForCompleteWithdrawals(first);
+        if (second.length > 0) _rollBlocksForCompleteWithdrawals(second);
+
+        cheats.prank(address(staker));
+        pod.permanentlyDisableRestaking();
+        assertTrue(pod.restakingDisabled(), "rewards-after-checkpoint: disable should succeed");
+    }
+}
