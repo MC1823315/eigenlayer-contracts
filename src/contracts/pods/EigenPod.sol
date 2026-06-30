@@ -32,6 +32,7 @@ interface IDelegationManagerWithAM {
 contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingConstants, EigenPodStorage {
     using SafeERC20 for IERC20;
     using BeaconChainProofs for *;
+    using SlashingLib for uint256;
 
     ///
     ///                            CONSTANTS / IMMUTABLES
@@ -431,6 +432,14 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         IStrategy[] memory bcEthArr = new IStrategy[](1);
         bcEthArr[0] = bcEth;
 
+        // Sum the beacon-chain ETH the pod owner is ENTITLED to across their queued beacon-chain-ETH
+        // withdrawals, after applying both operator AVS slashing (magnitude at `slashableUntil`) and
+        // the pod-owner beacon-chain slashing factor — exactly the value the `DelegationManager`
+        // would pay these withdrawals out at. Deposit shares are already 0 here (checked above), so
+        // queued withdrawals hold all of the owner's restaked entitlement. This is compared below
+        // against the pod's net restaked balance to detect unrealized AVS slashing.
+        uint64 beaconSlashingFactor = eigenPodManager.beaconChainSlashingFactor(podOwner);
+        uint256 entitledWei = 0;
         bytes32[] memory roots = dm.getQueuedWithdrawalRoots(podOwner);
         uint32 delay = dm.minWithdrawalDelayBlocks();
         for (uint256 i = 0; i < roots.length; i++) {
@@ -460,20 +469,42 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
             // cannot affect the amount the owner ultimately receives.
             require(uint32(block.number) > w.startBlock + delay, WithdrawalNotCompletable());
 
-            // If the withdrawal was queued while undelegated, no operator-level AVS slashing
-            // applies, so skip the magnitude check. The pod-owner-level BC slashing factor was
-            // already checked above.
-            if (w.delegatedTo == address(0)) continue;
-
-            // The withdrawal is beacon-chain-ETH only, so its delegated operator must not have been
-            // AVS-slashed for that strategy as of `slashableUntil`.
-            uint64 magnitude = am.getMaxMagnitudesAtBlock({
-                operator: w.delegatedTo,
-                strategies: bcEthArr,
-                blockNumber: w.startBlock + delay
-            })[0];
-            require(magnitude == WAD, PodIsSlashed());
+            // The withdrawal is beacon-chain-ETH only (single strategy, guaranteed by the mixed-check
+            // above), so `scaledShares[0]` is its beacon-chain-ETH leg. Fold in the operator AVS
+            // slashing factor (max magnitude at `slashableUntil`; WAD if queued while undelegated) and
+            // the pod-owner beacon-chain slashing factor to get the entitled wei.
+            uint64 operatorSlashingFactor = WAD;
+            if (w.delegatedTo != address(0)) {
+                operatorSlashingFactor = am.getMaxMagnitudesAtBlock({
+                    operator: w.delegatedTo,
+                    strategies: bcEthArr,
+                    blockNumber: w.startBlock + delay
+                })[0];
+            }
+            uint256 slashingFactor = uint256(operatorSlashingFactor).mulWad(beaconSlashingFactor);
+            entitledWei += SlashingLib.scaleForCompleteWithdrawal({
+                scaledShares: w.scaledShares[0],
+                slashingFactor: slashingFactor
+            });
         }
+
+        // The pod must not hold more restaked beacon-chain ETH than the owner is entitled to. AVS
+        // slashing of native ETH has no burn mechanism: it reduces the owner's entitlement (above)
+        // but does NOT remove ETH from the validator/pod. Any excess of the pod's net restaked
+        // balance over `entitledWei` is therefore unrealized AVS slashing. If we allowed disable,
+        // that excess could be swept (if in the pod) or moved out via external consolidation (if
+        // still on the beacon chain), escaping the slashing. The net restaked balance is the value
+        // accounted for by the last checkpoint plus any credentials proven since:
+        //   restakedExecutionLayerGwei (ETH already swept into the pod and credited)
+        // + prevBeaconBalanceGwei      (validator balances considered in the last checkpoint)
+        // + balanceDeltasGwei          (their net change at that checkpoint; signed)
+        // This excludes un-checkpointed ETH, which is not restaked and not slashable. Note shares
+        // are wei-denominated 1:1 with beacon-chain wei, so the comparison is in wei.
+        Checkpoint memory ckpt = _currentCheckpoint;
+        int256 netRestakedGwei = int256(uint256(restakedExecutionLayerGwei))
+            + int256(uint256(ckpt.prevBeaconBalanceGwei)) + int256(ckpt.balanceDeltasGwei);
+        uint256 netRestakedWei = netRestakedGwei > 0 ? uint256(netRestakedGwei) * GWEI_TO_WEI : 0;
+        require(netRestakedWei <= entitledWei, PodIsSlashed());
 
         restakingDisabled = true;
 
