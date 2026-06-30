@@ -472,12 +472,14 @@ function permanentlyDisableRestaking() external onlyEigenPodOwner;
 
 Sets the `restakingDisabled` flag on the pod. Emits `RestakingPermanentlyDisabled`.
 
-The preconditions ensure that no in-flight share-mutating operation can be invalidated by the disable:
+The preconditions ensure that no in-flight share-mutating operation can be invalidated by the disable, and that disabling cannot be used to evade slashing:
 * No active checkpoint, since finalizing one would credit shares.
 * The Pod Owner has zero positive deposit shares in the `EigenPodManager`. Note that `stakerDepositShares` clamps negative values (legacy share deficit) to zero, so a deficit does not block the disable.
 * The Pod Owner has not been beacon-chain slashed: `beaconChainSlashingFactor(podOwner)` equals `WAD`. Beacon-chain slashing accounting is incompatible with the share-freezing semantics of disable, so a BC-slashed pod cannot be disabled.
 * Every queued withdrawal for the Pod Owner is past its `slashableUntil` block (`startBlock + minWithdrawalDelayBlocks`). After this block, the withdrawal's slashing factor is locked at the historical block, so future beacon-chain slashings cannot affect what the owner ultimately receives. Note that this check uses `getQueuedWithdrawalRoots`, which only returns post-slashing-release withdrawals.
-* For each queued beacon-chain-ETH withdrawal that was delegated to an operator, that operator has not been AVS-slashed for the beacon-chain ETH strategy as of the withdrawal's `slashableUntil` block (its max magnitude equals `WAD`). This prevents AVS-slashing evasion. The check is skipped for withdrawals queued while undelegated (`delegatedTo == address(0)`), which have no operator-level slashing to apply.
+* The pod's net restaked beacon-chain balance does not exceed the Pod Owner's slashing-adjusted entitlement. This prevents evasion of AVS (EigenLayer) slashing, which has no burn mechanism for native ETH: an AVS slash reduces the owner's entitlement (via the operator's max magnitude) but does not remove ETH from the validator or pod, so the excess could otherwise be recovered via the non-restaked sweep or external consolidation. Specifically:
+    * **Entitlement** is summed across the Pod Owner's queued beacon-chain-ETH withdrawals as `scaledShares × operatorMaxMagnitudeAtSlashableUntil × beaconChainSlashingFactor` — the value the `DelegationManager` would pay these withdrawals out at (operator magnitude is `WAD` for withdrawals queued while undelegated). Deposit shares are already zero (above), so queued withdrawals hold all of the owner's entitlement.
+    * **Net restaked balance** is `restakedExecutionLayerGwei + currentCheckpoint.prevBeaconBalanceGwei + currentCheckpoint.balanceDeltasGwei` — the beacon-chain ETH accounted for by the last checkpoint plus any credentials proven since. This is launder-proof (it reflects the proven validator balance, not share accounting, which an AVS slash followed by completing-as-shares would otherwise collapse to the reduced value) and excludes un-checkpointed ETH, which is not restaked and not slashable.
 
 **Trust note for Proof Submitters:** only the Pod Owner can call this method. However, once disabled, the Proof Submitter inherits the expanded ability to consolidate to any target validator via `requestConsolidation`. Pod Owners should account for this when authorizing a Proof Submitter, and may wish to rotate the Proof Submitter before disabling.
 
@@ -496,7 +498,9 @@ The preconditions ensure that no in-flight share-mutating operation can be inval
 * For every queued withdrawal returned by `DelegationManager.getQueuedWithdrawalRoots(podOwner)` that includes `beaconChainETHStrategy`:
     * The withdrawal MUST NOT also include any other strategy (`MixedWithdrawalPending`)
     * `block.number > startBlock + minWithdrawalDelayBlocks` (`WithdrawalNotCompletable`)
-    * If the withdrawal was delegated to an operator (`delegatedTo != address(0)`), `AllocationManager.getMaxMagnitudesAtBlock(delegatedTo, [bcEth], startBlock + minWithdrawalDelayBlocks)` MUST equal `WAD` (`PodIsSlashed`)
+* The pod's net restaked balance MUST NOT exceed the Pod Owner's slashing-adjusted entitlement (`PodIsSlashed`), where:
+    * `entitlement = Σ over queued bcEth withdrawals of scaledShares × magnitude × beaconChainSlashingFactor`, with `magnitude = AllocationManager.getMaxMagnitudesAtBlock(delegatedTo, [bcEth], startBlock + minWithdrawalDelayBlocks)` (or `WAD` if `delegatedTo == address(0)`)
+    * `netRestaked = restakedExecutionLayerGwei + currentCheckpoint.prevBeaconBalanceGwei + currentCheckpoint.balanceDeltasGwei` (converted to wei)
 
 #### `withdrawNonRestakedBalance`
 
