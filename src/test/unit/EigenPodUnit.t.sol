@@ -2068,6 +2068,33 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertTrue(eigenPod.restakingDisabled(), "should disable when shares are negative");
     }
 
+    /// Safety probe for the share-deficit interaction with the net-restaked check: a pod with a
+    /// negative (legacy deficit) share balance that ALSO holds real restaked beacon-chain balance,
+    /// with no covering queued withdrawal, must NOT be disablable — its net restaked balance (the
+    /// validator's proven balance) exceeds its zero entitlement. Without the net-restaked check the
+    /// deposit-share clamp alone (#4) would let this through.
+    function test_permanentlyDisableRestaking_revert_negativeShares_withRestakedBalance() public {
+        (EigenPodUser staker,) = _newEigenPodStaker(32 ether);
+        EigenPod pod = staker.pod();
+        address podOwner = pod.podOwner();
+        (uint40[] memory validators,,) = staker.startValidators();
+        staker.verifyWithdrawalCredentials(validators);
+
+        // Real restaked balance now backs the pod (prevBeaconBalanceGwei > 0).
+        IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
+        uint64 netGwei = pod.withdrawableRestakedExecutionLayerGwei() + c.prevBeaconBalanceGwei;
+        assertGt(netGwei, 0, "pod should hold restaked balance");
+
+        // Force a legacy share deficit (clamps to 0 for the ActiveBalanceNotCleared precondition).
+        eigenPodManagerMock.setPodOwnerShares(podOwner, -1 ether);
+
+        // No queued withdrawal -> entitlement 0, net restaked > 0 -> disable must revert.
+        eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
+        cheats.prank(podOwner);
+        cheats.expectRevert(IEigenPodErrors.PodIsSlashed.selector);
+        pod.permanentlyDisableRestaking();
+    }
+
     function test_permanentlyDisableRestaking_revert_podIsSlashed() public {
         _wireDisablePreconditions();
         // Any factor below WAD must block disable. We use 0.99 WAD here as a representative value.
