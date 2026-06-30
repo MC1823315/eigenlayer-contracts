@@ -415,17 +415,18 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         // out via external consolidation. Either way, the accounting is not safe.
         require(eigenPodManager.beaconChainSlashingFactor(podOwner) == WAD, PodIsSlashed());
 
-        // Every queued withdrawal for the pod owner must be past `slashableUntil`. After this
-        // block, the withdrawal's slashing factor is locked at the historical block, so future
-        // beacon-chain slashings cannot affect the amount the owner ultimately receives.
-        // Note: `getQueuedWithdrawalRoots` returns post-slashing-release withdrawals only; any
-        // legacy pre-slashing-release withdrawals are not tracked here.
-        //
-        // Additionally, for any queued withdrawal that includes the beacon-chain ETH strategy,
-        // the operator the withdrawal was delegated to must NOT have been AVS-slashed for that
-        // strategy as of `slashableUntil`. Otherwise, the staker could disable, consolidate the
-        // validator out to an external target, and abandon the slashed-rate queued claim —
-        // sidestepping the slashing they were supposed to absorb.
+        // The loop below enforces two per-withdrawal preconditions and, in the same pass, sums the
+        // owner's slashing-adjusted entitlement for the final net-restaked check after the loop:
+        //   1. Every queued beacon-chain-ETH withdrawal must be past `slashableUntil`. After this
+        //      block its slashing factor is locked at the historical block, so future beacon-chain
+        //      slashings cannot change the amount the owner ultimately receives — and the operator
+        //      AVS magnitude read at that block is final. Note: `getQueuedWithdrawalRoots` returns
+        //      post-slashing-release withdrawals only; legacy pre-slashing-release withdrawals are
+        //      not tracked here.
+        //   2. No queued withdrawal may mix the beacon-chain-ETH strategy with another strategy.
+        // The entitlement accumulated here (operator AVS magnitude folded with the pod-owner beacon
+        // chain slashing factor) is the value these withdrawals would pay out, and is compared after
+        // the loop against the pod's net restaked balance to detect unrealized AVS slashing.
         IDelegationManager dm = eigenPodManager.delegationManager();
         IAllocationManager am = IDelegationManagerWithAM(address(dm)).allocationManager();
         IStrategy bcEth = eigenPodManager.beaconChainETHStrategy();
