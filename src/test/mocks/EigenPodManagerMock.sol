@@ -101,8 +101,6 @@ contract EigenPodManagerMock is Test, Pausable {
     }
 
     function clearQueuedWithdrawalsForDisabledPod(address podOwner) external {
-        if (address(delegationManager) != address(0)) {
-            delegationManager.clearQueuedWithdrawalsForDisabledPod(podOwner);
-        }
+        if (address(delegationManager) != address(0)) delegationManager.clearQueuedWithdrawalsForDisabledPod(podOwner);
     }
 }
