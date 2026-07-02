@@ -400,7 +400,11 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     }
 
     /// @inheritdoc IEigenPod
-    function permanentlyDisableRestaking() external onlyEigenPodOwner {
+    function permanentlyDisableRestaking()
+        external
+        onlyEigenPodOwner
+        onlyWhenNotPaused(PAUSED_PERMANENTLY_DISABLE_RESTAKING)
+    {
         require(!restakingDisabled, AlreadyDisabled());
 
         // No checkpoint may be in flight, since finalizing it would credit shares.
@@ -537,7 +541,7 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     /// @inheritdoc IEigenPod
     function withdrawNonRestakedBalance(
         address recipient
-    ) external onlyEigenPodOwner {
+    ) external onlyEigenPodOwner onlyWhenNotPaused(PAUSED_PERMANENTLY_DISABLE_RESTAKING) {
         require(restakingDisabled, RestakingNotDisabled());
         // Reject the zero address: this sweep is the sole recovery path for a disabled pod's ETH and
         // is irreversible, so a zero recipient would silently burn the full balance (a plain ETH send

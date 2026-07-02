@@ -33,4 +33,9 @@ abstract contract EigenPodPausingConstants {
     uint8 internal constant PAUSED_CONSOLIDATIONS = 9;
 
     uint8 internal constant PAUSED_WITHDRAWAL_REQUESTS = 10;
+
+    /// @notice Index for flag that pauses `permanentlyDisableRestaking` and `withdrawNonRestakedBalance`
+    /// *of the EigenPods* when set. This lets the guardian halt the (irreversible) restaking-disable
+    /// operation and its associated non-restaked ETH sweep if a defect is found post-deploy.
+    uint8 internal constant PAUSED_PERMANENTLY_DISABLE_RESTAKING = 11;
 }

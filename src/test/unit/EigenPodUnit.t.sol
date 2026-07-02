@@ -2537,6 +2537,36 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertEq(address(0).balance, 0, "no ETH may reach address(0)");
         assertEq(address(eigenPod).balance, 3 ether, "pod balance must be preserved after the revert");
     }
+
+    ///
+    ///                Pause guards
+    ///
+
+    /// The guardian can pause `permanentlyDisableRestaking` (the irreversible state change) via the
+    /// dedicated PAUSED_PERMANENTLY_DISABLE_RESTAKING flag.
+    function test_permanentlyDisableRestaking_revert_paused() public {
+        _wireDisablePreconditions();
+
+        cheats.prank(pauser);
+        eigenPodManagerMock.pause(2 ** PAUSED_PERMANENTLY_DISABLE_RESTAKING);
+
+        cheats.expectRevert(IEigenPodErrors.CurrentlyPaused.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    /// The guardian can pause `withdrawNonRestakedBalance` (the fund sweep) via the same flag.
+    function test_withdrawNonRestakedBalance_revert_paused() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+        _seedPodWithETH(1 ether);
+
+        cheats.prank(pauser);
+        eigenPodManagerMock.pause(2 ** PAUSED_PERMANENTLY_DISABLE_RESTAKING);
+
+        address recipient = cheats.addr(0xBEEF);
+        cheats.expectRevert(IEigenPodErrors.CurrentlyPaused.selector);
+        eigenPod.withdrawNonRestakedBalance(recipient);
+    }
 }
 
 contract EigenPodHarnessSetup is EigenPodUnitTests {
