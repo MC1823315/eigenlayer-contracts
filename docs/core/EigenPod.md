@@ -384,6 +384,7 @@ Note that the beacon chain may "skip" a consolidation request for many reasons. 
 * For each `request` in `requests`:
     * `request.srcPubkey` and `request.targetPubkey` MUST have a length of 48
     * `request.targetPubkey` MUST correspond to a validator whose withdrawal credentials are proven to point at the pod (`VALIDATOR_STATUS.ACTIVE`), UNLESS `restakingDisabled == true`
+    * When `restakingDisabled == true` and the target is NOT `VALIDATOR_STATUS.ACTIVE` in this pod, `msg.sender` MUST be the Pod Owner
 * If excess `msg.value` was provided, the transfer of the excess back to `msg.sender` MUST succeed.
 
 #### `requestWithdrawal`
@@ -452,7 +453,7 @@ A Pod Owner can permanently disable restaking on their `EigenPod`. Disabling is 
 While restaking is disabled:
 * `verifyWithdrawalCredentials`, `startCheckpoint`, and `verifyStaleBalance` revert. No new shares can be minted into the pod.
 * `withdrawNonRestakedBalance` allows the Pod Owner to sweep any ETH that arrives at the pod (validator exits, fees, direct sends) without going through the `DelegationManager` withdrawal queue.
-* `requestConsolidation` lifts its "target validator must be ACTIVE in this pod" requirement, allowing external consolidations.
+* `requestConsolidation` lifts its "target validator must be ACTIVE in this pod" requirement, allowing external consolidations only by the Pod Owner.
 
 Once disabled, the pod is fully frozen with respect to the share-based withdrawal queue:
 * `restakedExecutionLayerGwei` (REL) is zeroed, so all ETH the pod holds is treated as non-restaked and is sweepable via `withdrawNonRestakedBalance`.
@@ -481,7 +482,7 @@ The preconditions ensure that no in-flight share-mutating operation can be inval
     * **Entitlement** is summed across the Pod Owner's queued beacon-chain-ETH withdrawals as `scaledShares × operatorMaxMagnitudeAtSlashableUntil × beaconChainSlashingFactor` — the value the `DelegationManager` would pay these withdrawals out at (operator magnitude is `WAD` for withdrawals queued while undelegated). Deposit shares are already zero (above), so queued withdrawals hold all of the owner's entitlement.
     * **Net restaked balance** is `restakedExecutionLayerGwei + currentCheckpoint.prevBeaconBalanceGwei + currentCheckpoint.balanceDeltasGwei` — the beacon-chain ETH accounted for by the last checkpoint plus any credentials proven since. This is launder-proof (it reflects the proven validator balance, not share accounting, which an AVS slash followed by completing-as-shares would otherwise collapse to the reduced value) and excludes un-checkpointed ETH, which is not restaked and not slashable.
 
-**Trust note for Proof Submitters:** only the Pod Owner can call this method. However, once disabled, the Proof Submitter inherits the expanded ability to consolidate to any target validator via `requestConsolidation`. Pod Owners should account for this when authorizing a Proof Submitter, and may wish to rotate the Proof Submitter before disabling.
+**Trust note for Proof Submitters:** only the Pod Owner can call this method. Once disabled, `requestConsolidation` allows external consolidations by the Pod Owner, while the Proof Submitter retains in-pod consolidation only — so a Proof Submitter does not gain the ability to move funds out of the owner's control on disable.
 
 *Effects*:
 * Sets `restakingDisabled = true`

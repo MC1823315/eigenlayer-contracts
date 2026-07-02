@@ -320,9 +320,15 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
             bytes32 sourcePubkeyHash = _calcPubkeyHash(request.srcPubkey);
             bytes32 targetPubkeyHash = _calcPubkeyHash(request.targetPubkey);
 
+            bool targetActiveInPod = validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE;
+
             // Ensure target has verified withdrawal credentials pointed at this pod
             if (enforceTargetActive) {
-                require(validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE, ValidatorNotActiveInPod());
+                require(targetActiveInPod, ValidatorNotActiveInPod());
+            } else if (!targetActiveInPod) {
+                // External consolidation moves funds beyond the owner's recovery path, so restrict it
+                // to the owner. See "Disabling Restaking" in docs/core/EigenPod.md.
+                require(msg.sender == podOwner, OnlyEigenPodOwner());
             }
 
             // Call the predeploy

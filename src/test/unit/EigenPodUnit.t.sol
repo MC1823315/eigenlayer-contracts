@@ -2384,6 +2384,48 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         pod.requestConsolidation{value: fee}(cReqs);
     }
 
+    /// While disabled, a consolidation whose target is not active in this pod moves balance outside the
+    /// pod's withdrawal credentials, so it is restricted to the pod owner. A proof submitter, which
+    /// otherwise shares `requestConsolidation`, cannot perform an external consolidation.
+    function test_disabled_externalConsolidation_revert_proofSubmitter() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        // Target validator is NOT active in this pod (external target).
+        bytes memory srcPubkey = uint40(1).toPubkey();
+        bytes memory targetPubkey = uint40(2).toPubkey();
+        ConsolidationRequest[] memory cReqs = new ConsolidationRequest[](1);
+        cReqs[0] = ConsolidationRequest({srcPubkey: srcPubkey, targetPubkey: targetPubkey});
+
+        uint fee = eigenPod.getConsolidationRequestFee();
+        cheats.deal(defaultProofSubmitter, defaultProofSubmitter.balance + fee);
+
+        // The proof submitter (set in setUp) is blocked from external-target consolidation post-disable.
+        cheats.prank(defaultProofSubmitter);
+        cheats.expectRevert(IEigenPodErrors.OnlyEigenPodOwner.selector);
+        eigenPod.requestConsolidation{value: fee}(cReqs);
+    }
+
+    /// The pod owner can still perform an external consolidation while disabled — the owner
+    /// restriction narrows who may call it, without removing the capability itself.
+    function test_disabled_externalConsolidation_ownerAllowed() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        bytes memory srcPubkey = uint40(1).toPubkey();
+        bytes memory targetPubkey = uint40(2).toPubkey();
+        ConsolidationRequest[] memory cReqs = new ConsolidationRequest[](1);
+        cReqs[0] = ConsolidationRequest({srcPubkey: srcPubkey, targetPubkey: targetPubkey});
+
+        uint fee = eigenPod.getConsolidationRequestFee();
+        cheats.deal(address(this), address(this).balance + fee);
+
+        // Owner is address(this) in this harness — the call succeeds and emits the consolidation event.
+        cheats.expectEmit(true, true, true, true, address(eigenPod));
+        emit ConsolidationRequested(srcPubkey.pubkeyHash(), targetPubkey.pubkeyHash());
+        eigenPod.requestConsolidation{value: fee}(cReqs);
+    }
+
     ///
     ///                withdrawNonRestakedBalance
     ///
