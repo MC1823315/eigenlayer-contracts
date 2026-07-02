@@ -539,6 +539,10 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
         address recipient
     ) external onlyEigenPodOwner {
         require(restakingDisabled, RestakingNotDisabled());
+        // Reject the zero address: this sweep is the sole recovery path for a disabled pod's ETH and
+        // is irreversible, so a zero recipient would silently burn the full balance (a plain ETH send
+        // to address(0) does not revert). Matches the codebase-wide InputAddressZero() discipline.
+        require(recipient != address(0), InputAddressZero());
         // Sweep the pod's full balance. `restakedExecutionLayerGwei` is always 0 here: disable zeroes
         // it, and it can only be raised again by completing a checkpoint, which is locked while
         // disabled. The subtraction is kept to mirror the general "free balance" formula and as a

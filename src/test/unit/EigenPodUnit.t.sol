@@ -2517,6 +2517,26 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertEq(recipient.balance, preBalance, "recipient gets the full balance");
         assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL stays zero");
     }
+
+    /// `withdrawNonRestakedBalance` must reject the zero address. This is the sole recovery path for a
+    /// disabled pod's ETH and it sweeps the full balance, so without the guard a zero recipient would
+    /// silently burn everything: a plain ETH transfer to address(0) succeeds at the EVM level (no code
+    /// to revert), so the call would return normally with the balance irrecoverably sent to address(0).
+    function test_withdrawNonRestakedBalance_revert_zeroRecipient() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+        _seedPodWithETH(3 ether);
+
+        // address(0) starts empty, so any post-call balance there would be an unambiguous burn.
+        assertEq(address(0).balance, 0, "address(0) should start empty");
+
+        cheats.expectRevert(IEigenPodErrors.InputAddressZero.selector);
+        eigenPod.withdrawNonRestakedBalance(address(0));
+
+        // Nothing was sent to address(0), and the pod's balance is untouched and still recoverable.
+        assertEq(address(0).balance, 0, "no ETH may reach address(0)");
+        assertEq(address(eigenPod).balance, 3 ether, "pod balance must be preserved after the revert");
+    }
 }
 
 contract EigenPodHarnessSetup is EigenPodUnitTests {
