@@ -320,9 +320,15 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
             bytes32 sourcePubkeyHash = _calcPubkeyHash(request.srcPubkey);
             bytes32 targetPubkeyHash = _calcPubkeyHash(request.targetPubkey);
 
+            bool targetActiveInPod = validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE;
+
             // Ensure target has verified withdrawal credentials pointed at this pod
             if (enforceTargetActive) {
-                require(validatorStatus(targetPubkeyHash) == VALIDATOR_STATUS.ACTIVE, ValidatorNotActiveInPod());
+                require(targetActiveInPod, ValidatorNotActiveInPod());
+            } else if (!targetActiveInPod) {
+                // External consolidation moves funds beyond the owner's recovery path, so restrict it
+                // to the owner. See "Disabling Restaking" in docs/core/EigenPod.md.
+                require(msg.sender == podOwner, OnlyEigenPodOwner());
             }
 
             // Call the predeploy
@@ -394,7 +400,11 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     }
 
     /// @inheritdoc IEigenPod
-    function permanentlyDisableRestaking() external onlyEigenPodOwner {
+    function permanentlyDisableRestaking()
+        external
+        onlyEigenPodOwner
+        onlyWhenNotPaused(PAUSED_PERMANENTLY_DISABLE_RESTAKING)
+    {
         require(!restakingDisabled, AlreadyDisabled());
 
         // No checkpoint may be in flight, since finalizing it would credit shares.
@@ -531,8 +541,12 @@ contract EigenPod is Initializable, ReentrancyGuardUpgradeable, EigenPodPausingC
     /// @inheritdoc IEigenPod
     function withdrawNonRestakedBalance(
         address recipient
-    ) external onlyEigenPodOwner {
+    ) external onlyEigenPodOwner onlyWhenNotPaused(PAUSED_PERMANENTLY_DISABLE_RESTAKING) {
         require(restakingDisabled, RestakingNotDisabled());
+        // Reject the zero address: this sweep is the sole recovery path for a disabled pod's ETH and
+        // is irreversible, so a zero recipient would silently burn the full balance (a plain ETH send
+        // to address(0) does not revert). Matches the codebase-wide InputAddressZero() discipline.
+        require(recipient != address(0), InputAddressZero());
         // Sweep the pod's full balance. `restakedExecutionLayerGwei` is always 0 here: disable zeroes
         // it, and it can only be raised again by completing a checkpoint, which is locked while
         // disabled. The subtraction is kept to mirror the general "free balance" formula and as a

@@ -135,9 +135,7 @@ contract Integration_Eigenpod_Disable is IntegrationCheckUtils {
         assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL should be zeroed on disable");
 
         // The queued withdrawal must have been cleared from the DelegationManager queue by disable.
-        assertEq(
-            delegationManager.getQueuedWithdrawalRoots(address(staker)).length, 0, "withdrawal should be cleared on disable"
-        );
+        assertEq(delegationManager.getQueuedWithdrawalRoots(address(staker)).length, 0, "withdrawal should be cleared on disable");
 
         IERC20[] memory tokens = new IERC20[](strategies.length);
         for (uint i = 0; i < strategies.length; i++) {
@@ -315,7 +313,7 @@ contract Integration_Eigenpod_Disable_Reconcile is IntegrationCheckUtils {
         staker.completeCheckpoint();
 
         // Queue out all shares, exit every validator, checkpoint the exits into REL.
-        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        int shares = eigenPodManager.podOwnerDepositShares(address(staker));
         uint[] memory toQueue = new uint[](1);
         toQueue[0] = uint(shares);
         Withdrawal[] memory w = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
@@ -349,7 +347,7 @@ contract Integration_Eigenpod_Disable_Reconcile is IntegrationCheckUtils {
         staker.startCheckpoint();
         staker.completeCheckpoint();
 
-        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        int shares = eigenPodManager.podOwnerDepositShares(address(staker));
         uint[] memory toQueue = new uint[](1);
         toQueue[0] = uint(shares);
         Withdrawal[] memory w = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
@@ -383,7 +381,7 @@ contract Integration_Eigenpod_Disable_Reconcile is IntegrationCheckUtils {
         staker.completeCheckpoint();
 
         // Queue all current shares.
-        int256 shares = eigenPodManager.podOwnerDepositShares(address(staker));
+        int shares = eigenPodManager.podOwnerDepositShares(address(staker));
         uint[] memory toQueue = new uint[](1);
         toQueue[0] = uint(shares);
         Withdrawal[] memory first = staker.queueWithdrawals(BEACONCHAIN_ETH_STRAT.toArray(), toQueue);
@@ -395,7 +393,7 @@ contract Integration_Eigenpod_Disable_Reconcile is IntegrationCheckUtils {
 
         // Re-queue the reward shares so deposit shares hit 0.
         Withdrawal[] memory second;
-        int256 rewardShares = eigenPodManager.podOwnerDepositShares(address(staker));
+        int rewardShares = eigenPodManager.podOwnerDepositShares(address(staker));
         if (rewardShares > 0) {
             uint[] memory rq = new uint[](1);
             rq[0] = uint(rewardShares);

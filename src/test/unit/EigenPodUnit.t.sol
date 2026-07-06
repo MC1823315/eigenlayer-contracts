@@ -1958,11 +1958,7 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         eigenPodManagerMock.setBeaconChainETHStrategy(BEACON_ETH_STRATEGY);
     }
 
-    function _newQueuedWithdrawal(address staker, uint32 startBlock)
-        internal
-        pure
-        returns (IDelegationManagerTypes.Withdrawal memory)
-    {
+    function _newQueuedWithdrawal(address staker, uint32 startBlock) internal pure returns (IDelegationManagerTypes.Withdrawal memory) {
         return _newQueuedWithdrawal(staker, startBlock, address(0));
     }
 
@@ -2221,9 +2217,7 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertTrue(eigenPod.restakingDisabled(), "should disable");
         assertEq(delegationManagerMock.clearQueuedWithdrawalsCallCount(), 1, "cleanup should be called once");
         assertEq(delegationManagerMock.lastClearedDisabledPod(), address(this), "cleanup called for pod owner");
-        assertEq(
-            delegationManagerMock.getQueuedWithdrawalRoots(address(this)).length, 0, "queue entry should be cleared"
-        );
+        assertEq(delegationManagerMock.getQueuedWithdrawalRoots(address(this)).length, 0, "queue entry should be cleared");
     }
 
     function test_permanentlyDisableRestaking_revert_mixedWithdrawal() public {
@@ -2384,6 +2378,48 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         pod.requestConsolidation{value: fee}(cReqs);
     }
 
+    /// While disabled, a consolidation whose target is not active in this pod moves balance outside the
+    /// pod's withdrawal credentials, so it is restricted to the pod owner. A proof submitter, which
+    /// otherwise shares `requestConsolidation`, cannot perform an external consolidation.
+    function test_disabled_externalConsolidation_revert_proofSubmitter() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        // Target validator is NOT active in this pod (external target).
+        bytes memory srcPubkey = uint40(1).toPubkey();
+        bytes memory targetPubkey = uint40(2).toPubkey();
+        ConsolidationRequest[] memory cReqs = new ConsolidationRequest[](1);
+        cReqs[0] = ConsolidationRequest({srcPubkey: srcPubkey, targetPubkey: targetPubkey});
+
+        uint fee = eigenPod.getConsolidationRequestFee();
+        cheats.deal(defaultProofSubmitter, defaultProofSubmitter.balance + fee);
+
+        // The proof submitter (set in setUp) is blocked from external-target consolidation post-disable.
+        cheats.prank(defaultProofSubmitter);
+        cheats.expectRevert(IEigenPodErrors.OnlyEigenPodOwner.selector);
+        eigenPod.requestConsolidation{value: fee}(cReqs);
+    }
+
+    /// The pod owner can still perform an external consolidation while disabled — the owner
+    /// restriction narrows who may call it, without removing the capability itself.
+    function test_disabled_externalConsolidation_ownerAllowed() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+
+        bytes memory srcPubkey = uint40(1).toPubkey();
+        bytes memory targetPubkey = uint40(2).toPubkey();
+        ConsolidationRequest[] memory cReqs = new ConsolidationRequest[](1);
+        cReqs[0] = ConsolidationRequest({srcPubkey: srcPubkey, targetPubkey: targetPubkey});
+
+        uint fee = eigenPod.getConsolidationRequestFee();
+        cheats.deal(address(this), address(this).balance + fee);
+
+        // Owner is address(this) in this harness — the call succeeds and emits the consolidation event.
+        cheats.expectEmit(true, true, true, true, address(eigenPod));
+        emit ConsolidationRequested(srcPubkey.pubkeyHash(), targetPubkey.pubkeyHash());
+        eigenPod.requestConsolidation{value: fee}(cReqs);
+    }
+
     ///
     ///                withdrawNonRestakedBalance
     ///
@@ -2452,10 +2488,10 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         // withdrawal so disable's net-restaked-vs-entitlement check passes (mirrors production: this
         // REL exists only because shares were queued out, which created the entitlement).
         IEigenPodTypes.Checkpoint memory c = pod.currentCheckpoint();
-        int256 netGwei =
-            int256(uint256(pod.withdrawableRestakedExecutionLayerGwei())) + int256(uint256(c.prevBeaconBalanceGwei)) + int256(c.balanceDeltasGwei);
+        int netGwei =
+            int(uint(pod.withdrawableRestakedExecutionLayerGwei())) + int(uint(c.prevBeaconBalanceGwei)) + int(c.balanceDeltasGwei);
         eigenPodManagerMock.setPodOwnerShares(podOwner, 0);
-        _registerCoveringWithdrawal(podOwner, uint64(uint256(netGwei)));
+        _registerCoveringWithdrawal(podOwner, uint64(uint(netGwei)));
         _disablePod(pod);
 
         // Disabling zeroes REL: the formerly-reserved ETH is now treated as non-restaked.
@@ -2474,6 +2510,56 @@ contract EigenPodUnitTests_DisableRestaking is EigenPodUnitTests {
         assertEq(address(pod).balance, 0, "entire balance is sweepable once REL is zeroed");
         assertEq(recipient.balance, preBalance, "recipient gets the full balance");
         assertEq(pod.withdrawableRestakedExecutionLayerGwei(), 0, "REL stays zero");
+    }
+
+    /// `withdrawNonRestakedBalance` must reject the zero address. This is the sole recovery path for a
+    /// disabled pod's ETH and it sweeps the full balance, so without the guard a zero recipient would
+    /// silently burn everything: a plain ETH transfer to address(0) succeeds at the EVM level (no code
+    /// to revert), so the call would return normally with the balance irrecoverably sent to address(0).
+    function test_withdrawNonRestakedBalance_revert_zeroRecipient() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+        _seedPodWithETH(3 ether);
+
+        // address(0) starts empty, so any post-call balance there would be an unambiguous burn.
+        assertEq(address(0).balance, 0, "address(0) should start empty");
+
+        cheats.expectRevert(IEigenPodErrors.InputAddressZero.selector);
+        eigenPod.withdrawNonRestakedBalance(address(0));
+
+        // Nothing was sent to address(0), and the pod's balance is untouched and still recoverable.
+        assertEq(address(0).balance, 0, "no ETH may reach address(0)");
+        assertEq(address(eigenPod).balance, 3 ether, "pod balance must be preserved after the revert");
+    }
+
+    ///
+    ///                Pause guards
+    ///
+
+    /// The guardian can pause `permanentlyDisableRestaking` (the irreversible state change) via the
+    /// dedicated PAUSED_PERMANENTLY_DISABLE_RESTAKING flag.
+    function test_permanentlyDisableRestaking_revert_paused() public {
+        _wireDisablePreconditions();
+
+        cheats.prank(pauser);
+        eigenPodManagerMock.pause(2**PAUSED_PERMANENTLY_DISABLE_RESTAKING);
+
+        cheats.expectRevert(IEigenPodErrors.CurrentlyPaused.selector);
+        eigenPod.permanentlyDisableRestaking();
+    }
+
+    /// The guardian can pause `withdrawNonRestakedBalance` (the fund sweep) via the same flag.
+    function test_withdrawNonRestakedBalance_revert_paused() public {
+        _wireDisablePreconditions();
+        eigenPod.permanentlyDisableRestaking();
+        _seedPodWithETH(1 ether);
+
+        cheats.prank(pauser);
+        eigenPodManagerMock.pause(2**PAUSED_PERMANENTLY_DISABLE_RESTAKING);
+
+        address recipient = cheats.addr(0xBEEF);
+        cheats.expectRevert(IEigenPodErrors.CurrentlyPaused.selector);
+        eigenPod.withdrawNonRestakedBalance(recipient);
     }
 }
 
