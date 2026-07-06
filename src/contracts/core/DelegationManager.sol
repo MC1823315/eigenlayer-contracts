@@ -276,6 +276,45 @@ contract DelegationManager is
     }
 
     /// @inheritdoc IDelegationManager
+    function clearQueuedWithdrawalsForDisabledPod(
+        address staker
+    ) external onlyEigenPodManager nonReentrant {
+        bytes32[] memory roots = getQueuedWithdrawalRoots(staker);
+        for (uint256 i = 0; i < roots.length; i++) {
+            Withdrawal storage w = _queuedWithdrawals[roots[i]];
+
+            // Only clear withdrawals that include the beacon-chain-ETH strategy. Pure-LST withdrawals
+            // route through the StrategyManager and are unaffected by the pod disabling.
+            bool hasBcEth = false;
+            bool hasOther = false;
+            for (uint256 j = 0; j < w.strategies.length; j++) {
+                if (w.strategies[j] == beaconChainETHStrategy) {
+                    hasBcEth = true;
+                } else {
+                    hasOther = true;
+                }
+            }
+            if (!hasBcEth) continue;
+
+            // Defense-in-depth: the destructive delete below is irreversible, and the non-beacon-chain
+            // leg of a mixed withdrawal is unrecoverable once cleared (its deposit shares were already
+            // decremented at queue time, and the pod's non-restaked sweep only recovers ETH). The
+            // EigenPod's disable preconditions already reject mixed withdrawals (`MixedWithdrawalPending`),
+            // so this is unreachable today; we guard here anyway so this function never destroys
+            // unrecoverable value if reached through a future caller or a regression upstream.
+            require(!hasOther, MixedWithdrawalNotClearable());
+
+            // Deposit shares and operator delegation were already decremented at queue time, so we
+            // only remove the queue entry. The withdrawal's value is recovered by the pod owner via
+            // `EigenPod.withdrawNonRestakedBalance`.
+            _stakerQueuedWithdrawalRoots[staker].remove(roots[i]);
+            delete _queuedWithdrawals[roots[i]];
+            delete pendingWithdrawals[roots[i]];
+            emit QueuedWithdrawalClearedForDisabledPod(roots[i]);
+        }
+    }
+
+    /// @inheritdoc IDelegationManager
     function slashOperatorShares(
         address operator,
         OperatorSet calldata operatorSet,

@@ -30,6 +30,10 @@ interface IDelegationManagerErrors {
 
     /// @dev Thrown when attempting to execute an action that was not queued.
     error WithdrawalNotQueued();
+    /// @dev Thrown when clearing a disabled pod's queue encounters a withdrawal that mixes the
+    /// beacon-chain-ETH strategy with another strategy, whose non-beacon-chain value cannot be
+    /// safely cleared. Such withdrawals are rejected at disable time and must never reach here.
+    error MixedWithdrawalNotClearable();
     /// @dev Thrown when caller cannot undelegate on behalf of a staker.
     error CallerCannotUndelegate();
     /// @dev Thrown when two array parameters have mismatching lengths.
@@ -159,6 +163,11 @@ interface IDelegationManagerEvents is IDelegationManagerTypes {
 
     /// @notice Emitted when a queued withdrawal is completed
     event SlashingWithdrawalCompleted(bytes32 withdrawalRoot);
+
+    /// @notice Emitted when a queued beacon-chain-ETH withdrawal is cleared (removed without payout)
+    /// because the staker's EigenPod permanently disabled restaking. The withdrawal's value is
+    /// recovered by the pod owner via `EigenPod.withdrawNonRestakedBalance`, not through this queue.
+    event QueuedWithdrawalClearedForDisabledPod(bytes32 withdrawalRoot);
 
     /// @notice Emitted whenever an operator's shares are slashed for a given strategy
     event OperatorSharesSlashed(address indexed operator, IStrategy strategy, uint256 totalSlashedShares);
@@ -319,6 +328,19 @@ interface IDelegationManager is ISignatureUtilsMixin, IDelegationManagerErrors, 
         address staker,
         uint256 curDepositShares,
         uint64 beaconChainSlashingFactorDecrease
+    ) external;
+
+    /// @notice Clears all of a staker's queued beacon-chain-ETH withdrawals without paying them out,
+    /// for use when the staker's EigenPod permanently disables restaking. Pure-LST withdrawals are
+    /// left untouched.
+    /// @param staker the pod owner whose beacon-chain-ETH withdrawals will be cleared
+    /// @dev Deposit shares and operator delegation were already decremented when these withdrawals
+    /// were queued, so clearing only removes the now-uncompletable queue entries; no shares are
+    /// re-credited and no delegation is changed. The withdrawals' value is recovered by the pod owner
+    /// via `EigenPod.withdrawNonRestakedBalance`.
+    /// @dev Callable only by the EigenPodManager (which is in turn called by the disabling EigenPod).
+    function clearQueuedWithdrawalsForDisabledPod(
+        address staker
     ) external;
 
     /// @notice Decreases the operator's shares in storage after a slash and increases the burnable shares by calling

@@ -238,6 +238,13 @@ contract EigenPodManager is
         emit BurnableETHSharesIncreased(addedSharesToBurn);
     }
 
+    /// @inheritdoc IEigenPodManager
+    function clearQueuedWithdrawalsForDisabledPod(
+        address podOwner
+    ) external onlyEigenPod(podOwner) nonReentrant {
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(podOwner);
+    }
+
     /// @notice Sets the address that can set proof timestamps
     function setProofTimestampSetter(
         address newProofTimestampSetter

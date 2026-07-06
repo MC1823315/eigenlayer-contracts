@@ -317,7 +317,7 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// @param requests An array of requests consisting of the source and target pubkeys
     /// of the validators to be consolidated
     /// @dev The target validator MUST have ACTIVE (proven) withdrawal credentials pointed at
-    /// the pod. This prevents cross-pod consolidations.
+    /// the pod. This prevents external consolidations.
     /// @dev EXCEPTION: when `restakingDisabled == true`, this restriction is lifted and the
     /// caller may consolidate to any target. The pod no longer mints shares, so there is no
     /// accounting invariant for the ACTIVE-in-pod check to protect.
@@ -454,7 +454,7 @@ interface IEigenPod is IEigenPodErrors, IEigenPodEvents {
     /// - for every queued beacon-chain-ETH withdrawal, the operator the withdrawal was delegated
     /// to had a full (`WAD`) max magnitude for the beacon-chain ETH strategy as of the
     /// withdrawal's `slashableUntil` block. This prevents staker-level evasion of AVS slashing
-    /// via cross-pod consolidation after disabling.
+    /// via external consolidation after disabling.
     function permanentlyDisableRestaking() external;
 
     /// @notice Sweeps all non-restaked ETH out of the pod to `recipient`. Only callable by the

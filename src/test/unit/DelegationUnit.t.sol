@@ -7688,3 +7688,108 @@ contract DelegationManagerUnitTests_getQueuedWithdrawal is DelegationManagerUnit
         assertEq(shares.length, 0, "sanity check");
     }
 }
+
+contract DelegationManagerUnitTests_clearQueuedWithdrawalsForDisabledPod is DelegationManagerUnitTests {
+    using ArrayLib for *;
+    using SlashingLib for *;
+
+    function testFuzz_Revert_invalidCaller(Randomness r) public rand(r) {
+        address invalidCaller = r.Address();
+        cheats.assume(invalidCaller != address(eigenPodManagerMock));
+        cheats.expectRevert(IDelegationManagerErrors.OnlyEigenPodManager.selector);
+        cheats.prank(invalidCaller);
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
+    }
+
+    /// @notice A queued beacon-chain-ETH withdrawal is removed from the queue without re-crediting
+    /// shares or changing operator delegation (both were already decremented at queue time).
+    function test_clearsBeaconChainEthWithdrawal() public {
+        uint depositAmount = 10 ether;
+        eigenPodManagerMock.setPodOwnerShares(defaultStaker, int(depositAmount));
+        _registerOperatorWithBaseDetails(defaultOperator);
+        _delegateToOperatorWhoAcceptsAllStakers(defaultStaker, defaultOperator);
+
+        (QueuedWithdrawalParams[] memory params,, bytes32 root) = _setUpQueueWithdrawalsSingleStrat({
+            staker: defaultStaker,
+            strategy: beaconChainETHStrategy,
+            depositSharesToWithdraw: depositAmount
+        });
+        cheats.prank(defaultStaker);
+        delegationManager.queueWithdrawals(params);
+
+        // Queueing already removed deposit shares and decremented operator delegation.
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "withdrawal should be queued");
+        uint operatorSharesBefore = delegationManager.operatorShares(defaultOperator, beaconChainETHStrategy);
+        assertEq(operatorSharesBefore, 0, "operator shares already removed at queue time");
+
+        cheats.expectEmit(true, true, true, true, address(delegationManager));
+        emit QueuedWithdrawalClearedForDisabledPod(root);
+        cheats.prank(address(eigenPodManagerMock));
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
+
+        // Queue entry is gone, and no shares were re-credited.
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 0, "queue entry should be cleared");
+        assertFalse(delegationManager.pendingWithdrawals(root), "pending flag should be cleared");
+        assertEq(
+            delegationManager.operatorShares(defaultOperator, beaconChainETHStrategy),
+            operatorSharesBefore,
+            "operator shares must not change"
+        );
+        assertEq(eigenPodManagerMock.podOwnerDepositShares(defaultStaker), 0, "deposit shares must not be re-credited");
+    }
+
+    /// @notice A pure-LST withdrawal is left untouched, since it is unaffected by pod disable.
+    function test_leavesLSTWithdrawal() public {
+        uint depositAmount = 10 ether;
+        _depositIntoStrategies(defaultStaker, strategyMock.toArray(), depositAmount.toArrayU256());
+        _registerOperatorWithBaseDetails(defaultOperator);
+        _delegateToOperatorWhoAcceptsAllStakers(defaultStaker, defaultOperator);
+
+        (QueuedWithdrawalParams[] memory params,, bytes32 root) =
+            _setUpQueueWithdrawalsSingleStrat({staker: defaultStaker, strategy: strategyMock, depositSharesToWithdraw: depositAmount});
+        cheats.prank(defaultStaker);
+        delegationManager.queueWithdrawals(params);
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "LST withdrawal should be queued");
+
+        cheats.prank(address(eigenPodManagerMock));
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
+
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "LST withdrawal must remain");
+        assertTrue(delegationManager.pendingWithdrawals(root), "LST pending flag must remain");
+    }
+
+    /// @notice With no queued withdrawals, the call is a no-op.
+    function test_noWithdrawals_noop() public {
+        cheats.prank(address(eigenPodManagerMock));
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 0, "still empty");
+    }
+
+    /// @notice Defense-in-depth: a withdrawal mixing beacon-chain-ETH with another strategy must
+    /// revert rather than be cleared, since its non-beacon-chain leg cannot be recovered once the
+    /// queue entry is deleted. The EigenPod's disable preconditions reject such withdrawals before
+    /// they reach here, so this guards against a future caller or an upstream regression.
+    function test_Revert_mixedWithdrawal() public {
+        uint depositAmount = 10 ether;
+        IStrategy[] memory strategies = new IStrategy[](2);
+        strategies[0] = beaconChainETHStrategy;
+        strategies[1] = strategyMock;
+        uint[] memory amounts = new uint[](2);
+        amounts[0] = depositAmount;
+        amounts[1] = depositAmount;
+
+        _depositIntoStrategies(defaultStaker, strategies, amounts);
+        _registerOperatorWithBaseDetails(defaultOperator);
+        _delegateToOperatorWhoAcceptsAllStakers(defaultStaker, defaultOperator);
+
+        (QueuedWithdrawalParams[] memory params,,) =
+            _setUpQueueWithdrawals({staker: defaultStaker, strategies: strategies, depositWithdrawalAmounts: amounts});
+        cheats.prank(defaultStaker);
+        delegationManager.queueWithdrawals(params);
+        assertEq(delegationManager.getQueuedWithdrawalRoots(defaultStaker).length, 1, "mixed withdrawal should be queued");
+
+        cheats.expectRevert(IDelegationManagerErrors.MixedWithdrawalNotClearable.selector);
+        cheats.prank(address(eigenPodManagerMock));
+        delegationManager.clearQueuedWithdrawalsForDisabledPod(defaultStaker);
+    }
+}
