@@ -256,6 +256,79 @@ contract EmissionsControllerUnitTests_pressButton is EmissionsControllerUnitTest
     }
 }
 
+contract EmissionsControllerUnitTests_pressButton_Burn is EmissionsControllerUnitTests {
+    function _addBurnDistribution(uint64 startEpoch, uint64 totalEpochs, uint64 weight) internal returns (uint) {
+        cheats.prank(incentiveCouncil);
+        return emissionsController.addDistribution(
+            Distribution({
+                weight: weight,
+                startEpoch: startEpoch,
+                totalEpochs: totalEpochs,
+                distributionType: DistributionType.Burn,
+                operatorSet: emptyOperatorSet(),
+                strategiesAndMultipliers: emptyStrategiesAndMultipliers()
+            })
+        );
+    }
+
+    /// @notice Assert a Burn distribution can be added without any strategies/multipliers.
+    function test_addDistribution_Burn_NoStrategiesRequired() public {
+        uint distributionId = _addBurnDistribution({startEpoch: 0, totalEpochs: 0, weight: 10_000});
+        Distribution memory distribution = emissionsController.getDistribution(distributionId);
+        assertEq(uint8(distribution.distributionType), uint8(DistributionType.Burn));
+    }
+
+    /// @notice Assert processing a Burn distribution unwraps and burns its EIGEN allotment,
+    ///         reducing both EIGEN and bEIGEN total supply and leaving the controller with no residual balance.
+    function test_pressButton_Burn_BurnsAllotment() public {
+        _addBurnDistribution({startEpoch: 0, totalEpochs: 1, weight: 10_000});
+
+        uint eigenSupplyBefore = eigenMock.totalSupply();
+        uint backingSupplyBefore = backingEigenMock.totalSupply();
+
+        _pressButton({epoch: 0, length: 1, expectedProcessed: 1, expectedPressable: false});
+
+        // The full inflation amount was minted then burned, so total supplies are unchanged from before.
+        assertEq(eigenMock.totalSupply(), eigenSupplyBefore, "EIGEN supply should be net unchanged");
+        assertEq(backingEigenMock.totalSupply(), backingSupplyBefore, "bEIGEN supply should be net unchanged");
+        // No EIGEN or bEIGEN should remain in the controller.
+        assertEq(eigenMock.balanceOf(address(emissionsController)), 0, "controller should hold no EIGEN");
+        assertEq(backingEigenMock.balanceOf(address(emissionsController)), 0, "controller should hold no bEIGEN");
+    }
+
+    /// @notice Assert a Burn distribution only burns its weighted share, leaving the rest available.
+    function test_pressButton_Burn_PartialWeight() public {
+        // Burn half of emissions; the remaining half stays in the controller as unprocessed EIGEN.
+        _addBurnDistribution({startEpoch: 0, totalEpochs: 1, weight: 5000});
+
+        _pressButton({epoch: 0, length: 1, expectedProcessed: 1, expectedPressable: false});
+
+        uint burned = EMISSIONS_INFLATION_RATE * 5000 / emissionsController.MAX_TOTAL_WEIGHT();
+        uint remaining = EMISSIONS_INFLATION_RATE - burned;
+        assertEq(eigenMock.balanceOf(address(emissionsController)), remaining, "controller should retain unburned EIGEN");
+    }
+
+    /// @notice Assert the DistributionProcessed event reports success for a Burn distribution.
+    function test_pressButton_Burn_EmitsSuccess() public {
+        _addBurnDistribution({startEpoch: 0, totalEpochs: 1, weight: 10_000});
+        cheats.warp(EMISSIONS_START_TIME);
+
+        cheats.recordLogs();
+        emissionsController.pressButton(1);
+
+        Vm.Log[] memory logs = cheats.getRecordedLogs();
+        bool foundSuccess;
+        for (uint i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == IEmissionsControllerEvents.DistributionProcessed.selector) {
+                (, bool success) = abi.decode(logs[i].data, (Distribution, bool));
+                assertTrue(success, "Burn distribution should report success");
+                foundSuccess = true;
+            }
+        }
+        assertTrue(foundSuccess, "DistributionProcessed event not emitted");
+    }
+}
+
 contract EmissionsControllerUnitTests_sweep is EmissionsControllerUnitTests {
     /// @notice Assert the function reverts when paused.
     function test_revert_sweep_WhenPaused() public {

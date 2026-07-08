@@ -337,8 +337,11 @@ abstract contract IntegrationDeployer is ExistingDeploymentParser {
 
         // Grant EmissionsController permission to mint bEIGEN tokens
         bEIGEN.setIsMinter(address(emissionsController), true);
-        // Disable transfer restrictions for EIGEN token (use try-catch in case already disabled)
+        // Disable transfer restrictions for both tokens to match mainnet, where restrictions are
+        // already lifted. This is required for Burn distributions, which burn bEIGEN held by the
+        // controller. (use try-catch in case already disabled)
         try EIGEN.disableTransferRestrictions() {} catch {}
+        try bEIGEN.disableTransferRestrictions() {} catch {}
 
         cheats.stopPrank();
     }
@@ -560,8 +563,10 @@ abstract contract IntegrationDeployer is ExistingDeploymentParser {
         if (forkType == LOCAL) {
             cheats.startPrank(executorMultisig);
             bEIGEN.setIsMinter(address(emissionsController), true);
-            // Disable transfer restrictions for EIGEN token
+            // Disable transfer restrictions for both tokens to match mainnet, where restrictions
+            // are already lifted. Required for Burn distributions, which burn bEIGEN.
             EIGEN.disableTransferRestrictions();
+            bEIGEN.disableTransferRestrictions();
             cheats.stopPrank();
         }
     }

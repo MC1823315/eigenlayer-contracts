@@ -50,13 +50,16 @@ interface IEmissionsControllerTypes {
     ///      - OperatorSetUniqueStake: Calls `createUniqueStakeRewardsSubmission` for operator set rewards weighted by unique stake
     ///      - EigenDA: Calls `createAVSRewardsSubmission` for EigenDA-specific rewards
     ///      - Manual: Directly mints bEIGEN to specified recipients without RewardsCoordinator interaction
+    ///      - Burn: Unwraps its EIGEN allotment back into bEIGEN and burns it, permanently removing that
+    ///        portion of emissions from circulation. Used to dispose of excess funds.
     enum DistributionType {
         Disabled,
         RewardsForAllEarners,
         OperatorSetTotalStake,
         OperatorSetUniqueStake,
         EigenDA,
-        Manual
+        Manual,
+        Burn
     }
 
     /// @notice A struct containing the total minted and processed amounts for an epoch.

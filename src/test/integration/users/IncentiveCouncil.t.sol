@@ -70,7 +70,7 @@ contract IncentiveCouncil is Logger, IEmissionsControllerTypes {
     }
 
     function _randomDistributionType(bool allowDisabled) internal returns (DistributionType distributionType) {
-        return DistributionType(uint8(vm.randomUint({min: allowDisabled ? 0 : 1, max: 5})));
+        return DistributionType(uint8(vm.randomUint({min: allowDisabled ? 0 : 1, max: uint8(type(DistributionType).max)})));
     }
 
     function addDistributions(
